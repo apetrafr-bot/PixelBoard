@@ -64,6 +64,7 @@ for (const editing of [false, true]) {
       panGesture: null, drawingGesture: null, connectionGesture: null, connectorResizeGesture: null,
       pendingRemoteBoardIds: new Set(), remoteVersions: new Map(), boardRecords: new Map(),
       board: { id: "root" }, members: [], structuredClone, console,
+      isCatalogue: (record) => record?.recordType === "item-catalogue",
       async apiRequest(action) {
         requests++;
         return action === "boards"

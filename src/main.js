@@ -1,4 +1,6 @@
 import "./styles.css";
+import { initItemsUI } from "./items-ui.js";
+import { isCatalogue, catalogueId } from "./items-model.js";
 
 const DB_NAME = "pixelboard-local";
 const STORE_NAME = "boards";
@@ -63,6 +65,7 @@ let inviteCodeValue = "";
 let setupAvailable = false;
 let setupBusy = false;
 let backupBusy = false;
+let itemsUI;
 
 const newId = () => crypto.randomUUID();
 
@@ -229,8 +232,9 @@ async function loadRemoteWorkspace(auth, localRecords) {
   });
   boardRecords = remoteBoardMap;
   remoteBoards.splice(0, remoteBoards.length, ...remoteBoardMap.values());
-  if (remoteBoards.length) {
-    board = normalizeBoard(remoteBoards.find((record) => record.id === ROOT_ID) || remoteBoards[0]);
+  const normalBoards = remoteBoards.filter((record) => !isCatalogue(record));
+  if (normalBoards.length) {
+    board = normalizeBoard(normalBoards.find((record) => record.id === ROOT_ID) || normalBoards[0]);
     boardRecords.set(board.id, structuredClone(board));
   } else {
     board = {
@@ -275,6 +279,7 @@ async function syncRemoteChanges() {
       record.remoteUpdatedAt = entry.updated_at;
       remoteVersions.set(record.id, entry.version);
       boardRecords.set(record.id, structuredClone(record));
+      if (isCatalogue(record)) activeBoardChanged = true;
       if (board.id === record.id) {
         board = normalizeBoard({ ...record, zoom: board.zoom, viewX: viewport.scrollLeft, viewY: viewport.scrollTop });
         activeBoardChanged = true;
@@ -535,7 +540,7 @@ function buildCard(item) {
   grip.setAttribute("aria-label", `Déplacer ${cardDescription(item)}`);
   grip.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown ArrowLeft ArrowRight");
 
-  const labels = { note: "Note", image: "Image", link: "Lien", board: "Tableau", todo: Array.isArray(item.entries) ? "Liste" : "Tâche" };
+  const labels = { note: "Note", image: "Image", link: "Lien", board: "Tableau", "item-ref": "Item Unity", todo: Array.isArray(item.entries) ? "Liste" : "Tâche" };
   const label = document.createElement("span");
   label.className = "grip-label";
   label.innerHTML = `<span class="grip-symbol" aria-hidden="true">⠿</span><span>${labels[item.type] ?? "Carte"}</span>`;
@@ -573,6 +578,7 @@ function buildCard(item) {
   else if (item.type === "link") renderLinkCard(card, item);
   else if (item.type === "board") renderNestedBoard(card, item);
   else if (item.type === "todo") renderTodoCard(card, item);
+  else if (item.type === "item-ref") renderItemReference(card, item);
   for (const corner of ["nw", "ne", "sw", "se"]) {
     const handle = document.createElement("button");
     handle.type = "button";
@@ -926,6 +932,41 @@ function renderTodoCard(card, item) {
   if (responsible) assignee.style.setProperty("--member-color", responsible.color);
   details.append(assignee, status);
   content.append(checkbox, title, details);
+  card.append(content);
+}
+
+function addItemReference(projectId, itemId, position = viewportCenter()) {
+  const record = boardRecords.get(catalogueId(projectId));
+  const definition = record?.definitions.find((item) => item.id === itemId);
+  if (!remoteSession || !definition || definition.archived) throw new Error("Item absent ou archivé. Rechargez le catalogue.");
+  snapshotState();
+  board.items.push({ id: newId(), type: "item-ref", projectId, itemId, x: position.x, y: position.y, z: ++lastZIndex });
+  renderBoard();
+  scheduleSave();
+}
+
+function renderItemReference(card, item) {
+  const definition = boardRecords.get(catalogueId(item.projectId))?.definitions.find((entry) => entry.id === item.itemId);
+  const content = document.createElement("div");
+  content.className = "item-ref-content";
+  const name = document.createElement("strong");
+  name.textContent = definition?.name || "Référence item introuvable";
+  const detail = document.createElement("small");
+  const syncLabel = definition?.archived ? "Archivé" : !definition?.unity ? "À créer dans Unity"
+    : JSON.stringify(definition.values) === JSON.stringify(definition.lastUnityValues) ? "Dernière liaison confirmée" : "Modifié ici";
+  detail.textContent = definition ? `${definition.type} · ${syncLabel}`
+    : "Catalogue non chargé ou fiche absente. Aucun asset n’a été supprimé.";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "small-action";
+  open.textContent = "Ouvrir la fiche centrale";
+  open.addEventListener("click", () => itemsUI?.openItem(item.projectId, item.itemId));
+  if (definition?.illustration) {
+    const image = document.createElement("img");
+    image.src = definition.illustration; image.alt = ""; image.className = "item-thumbnail";
+    content.append(image);
+  }
+  content.append(name, detail, open);
   card.append(content);
 }
 
@@ -1312,6 +1353,7 @@ function renderBoardPicker() {
   const records = new Map(boardRecords);
   records.set(board.id, board);
   for (const record of records.values()) {
+    if (isCatalogue(record)) continue;
     const option = document.createElement("option");
     option.value = record.id;
     option.textContent = record.title || "Sans titre";
@@ -1532,7 +1574,7 @@ function renderBreadcrumbs() {
 
 function openBoard(boardId) {
   const next = boardRecords.get(boardId);
-  if (!next) return;
+  if (!next || isCatalogue(next)) return;
   board = normalizeBoard(next);
   renderBoard();
   viewport.scrollLeft = board.viewX;
@@ -2106,6 +2148,7 @@ async function executeBackupAction(operation, slot, revision) {
     return;
   }
   backupBusy = true;
+  if (typeof itemsUI !== "undefined") itemsUI?.setBlocked(true);
   $(".app-shell").inert = true;
   let restored = false;
   try {
@@ -2144,6 +2187,7 @@ async function executeBackupAction(operation, slot, revision) {
     }
   } finally {
     backupBusy = false;
+    if (typeof itemsUI !== "undefined") itemsUI?.setBlocked(false);
     $(".app-shell").inert = !remoteSession;
   }
 }
@@ -2278,6 +2322,7 @@ function renderAccessGate() {
 }
 
 function renderAuthControls() {
+  if (typeof itemsUI !== "undefined") itemsUI?.sessionChanged();
   renderAccessGate();
   const section = $("#auth-section");
   section.hidden = false;
@@ -2801,6 +2846,11 @@ function initEvents() {
     $("#drop-overlay").classList.add("is-visible");
   });
   viewport.addEventListener("dragover", (event) => {
+    if (Array.from(event.dataTransfer?.types || []).includes("application/x-pixelboard-item")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      return;
+    }
     if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
     event.preventDefault();
     $("#drop-overlay").classList.add("is-visible");
@@ -2809,6 +2859,15 @@ function initEvents() {
     if (!viewport.contains(event.relatedTarget)) $("#drop-overlay").classList.remove("is-visible");
   });
   viewport.addEventListener("drop", async (event) => {
+    const itemData = event.dataTransfer?.getData("application/x-pixelboard-item");
+    if (itemData) {
+      event.preventDefault();
+      try {
+        const reference = JSON.parse(itemData);
+        addItemReference(reference.projectId, reference.itemId, worldPoint(event));
+      } catch (error) { showToast(`Placement impossible : ${error.message}`); }
+      return;
+    }
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault();
     $("#drop-overlay").classList.remove("is-visible");
@@ -2901,6 +2960,27 @@ async function start() {
     showToast("Le navigateur ne permet pas l’enregistrement local. Vos modifications ne seront pas conservées.");
   }
   initEvents();
+  itemsUI = initItemsUI({
+    api: apiRequest, session: () => remoteSession, records: allStoredBoards,
+    version: (id) => remoteVersions.get(id) || 0,
+    flush: saveImmediately,
+    addReference: (projectId, itemId) => {
+      try { addItemReference(projectId, itemId); }
+      catch (error) { showToast(error.message); }
+    },
+    confirm: (title, text, action) => {
+      pendingConfirm = action;
+      showDialog(title, text, "Aucun asset Unity n’est supprimé automatiquement.", "Confirmer");
+    },
+    save: async (record) => {
+      if (!remoteSession) throw new Error("Connectez-vous avant de modifier le catalogue.");
+      if (remoteWritesInFlight || remoteSyncInFlight || backupBusy) throw new Error("Synchronisation en cours. Réessayez dans un instant.");
+      snapshotState();
+      boardRecords.set(record.id, structuredClone(record));
+      await persistRecords([record]);
+      renderBoard();
+    },
+  });
   renderTeam();
 }
 

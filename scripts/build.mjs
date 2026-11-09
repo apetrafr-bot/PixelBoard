@@ -8,7 +8,7 @@ export async function buildSite(outDir = resolve("dist")) {
   await build({ build: { outDir, emptyOutDir: false } });
   const apiDir = resolve(outDir, "api");
   await mkdir(apiDir, { recursive: true });
-  for (const file of ["index.php", "lib.php", ".htaccess"]) {
+  for (const file of ["index.php", "lib.php", "unity.php", "unity-lib.php", "unity-schema.sql", ".htaccess"]) {
     await copyFile(resolve("api", file), resolve(apiDir, file));
   }
 }

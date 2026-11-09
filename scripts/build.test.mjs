@@ -11,8 +11,8 @@ test("build packages only API runtime and preserves server configuration", async
     await buildSite(output);
     assert.equal(await readFile(join(output, "favicon.svg"), "utf8"), await readFile(join("public", "favicon.svg"), "utf8"));
     assert.match(await readFile(join(output, "index.html"), "utf8"), /rel="icon"[^>]+favicon\.svg/);
-    assert.deepEqual((await readdir(join(output, "api"))).sort(), [".htaccess", "index.php", "lib.php"]);
-    for (const file of ["index.php", "lib.php", ".htaccess"]) {
+    assert.deepEqual((await readdir(join(output, "api"))).sort(), [".htaccess", "index.php", "lib.php", "unity-lib.php", "unity-schema.sql", "unity.php"]);
+    for (const file of ["index.php", "lib.php", "unity.php", "unity-lib.php", "unity-schema.sql", ".htaccess"]) {
       assert.equal(await readFile(join(output, "api", file), "utf8"), await readFile(join("api", file), "utf8"));
     }
     await mkdir(join(output, "api"), { recursive: true });

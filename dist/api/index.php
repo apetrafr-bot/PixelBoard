@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require __DIR__ . '/lib.php';
+require __DIR__ . '/unity.php';
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
@@ -11,7 +12,7 @@ header('Referrer-Policy: same-origin');
 function pixelboard_reply(int $status, array $payload): never
 {
     http_response_code($status);
-    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
     exit;
 }
 
@@ -172,6 +173,7 @@ try {
     $startupStage = 'request';
     $action = (string) ($_GET['action'] ?? '');
     $method = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET');
+    if (str_starts_with($action, 'unity-')) pb_unity_handle($db, $action, $method);
 
     if ($action === 'setup' && $method === 'POST') {
         if (empty($_SERVER['HTTPS']) || $_SERVER['HTTPS'] === 'off') {
@@ -464,7 +466,7 @@ try {
             }
             $boards[] = [
                 'id' => $record['board_id'],
-                'data' => $data,
+                'data' => json_decode($record['data'], false),
                 'version' => (int) $record['version'],
                 'updated_at' => $record['updated_at'],
             ];
@@ -482,7 +484,18 @@ try {
             || !is_array($data['items'] ?? null)) {
             pixelboard_fail(422, 'Les données du tableau sont invalides.');
         }
-        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!pb_catalogue_valid($data)) pixelboard_fail(422, 'Catalogue ou référence item invalide.');
+        $projects = [];
+        if (($data['recordType'] ?? '') === 'item-catalogue') $projects[] = $data['projectId'];
+        foreach ($data['items'] as $item) {
+            if (($item['type'] ?? '') === 'item-ref') $projects[] = $item['projectId'];
+        }
+        foreach (array_unique($projects) as $projectId) {
+            if (!pb_unity_query($db, 'SELECT project_id FROM unity_projects WHERE workspace_id=? AND project_id=?', [$workspaceId, $projectId])->fetchColumn()) {
+                pixelboard_fail(422, 'Projet Unity non associé à cet espace.');
+            }
+        }
+        $json = json_encode(($data['recordType'] ?? '') === 'item-catalogue' ? pb_unity_wire_shape($data) : $data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
         if ($json === false) {
             pixelboard_fail(422, 'Le tableau ne peut pas être encodé.');
         }

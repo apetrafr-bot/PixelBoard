@@ -7,8 +7,8 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="description" content="Un espace visuel local pour organiser idées, images, tableaux et tâches d’équipe." />
     <title>PixelBoard — Atelier d’idées</title>
-    <script type="module" crossorigin src="/assets/index-BLMB7end.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-BGYsL3tT.css">
+    <script type="module" crossorigin src="/assets/index-CwP68rMc.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-1IqZ1-UV.css">
   </head>
   <body class="auth-locked">
     <main class="login-page" id="login-page" aria-labelledby="login-page-title">
@@ -52,6 +52,9 @@
           </button>
           <button class="rail-link" id="tool-checklist" type="button" title="Créer une liste de tâches">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h2v2H4zm5 1h7M4 10h2v2H4zm5 1h7M4 15h2v2H4zm5 1h7"/></svg><span>Liste</span>
+          </button>
+          <button class="rail-link" id="items-open" type="button" title="Catalogue d’items Unity">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h6v6H3zm8 0h6v6h-6zM3 11h6v6H3zm8 0h6v6h-6z"/></svg><span>Items</span>
           </button>
           <button class="rail-link" data-tool="line" type="button" title="Relier deux cartes avec une flèche">
             <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="15" r="2"/><circle cx="16" cy="5" r="2"/><path d="m5.5 13.7 9-7.4"/></svg><span>Connecteur</span>
@@ -256,5 +259,29 @@
       </div>
     </dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <aside id="items-panel" class="items-panel" aria-label="Catalogue d’items Unity" hidden>
+      <header class="items-heading"><h2>Items Unity</h2><button id="items-close" type="button" class="small-action">Fermer</button></header>
+      <p>Un catalogue central, des cartes liées dans vos tableaux.</p>
+      <div class="items-project-controls">
+        <label>Identifiant du projet (affiché dans Unity)<input id="items-project" maxlength="60" autocomplete="off" /></label>
+        <button id="items-load" type="button" class="small-action">Charger le projet</button>
+        <details id="items-pair-controls" hidden>
+          <summary>Liaison administrateur</summary>
+          <label>Nom du projet<input id="items-project-name" maxlength="120" /></label>
+          <button id="items-pair" type="button" class="small-action">Créer un code d’appairage</button>
+          <label>Code temporaire à saisir dans Unity<input id="items-pair-code" readonly hidden autocomplete="off" /></label>
+          <button id="items-revoke" type="button" class="small-action">Révoquer la liaison</button>
+        </details>
+      </div>
+      <p id="items-status" role="status" aria-live="polite"></p>
+      <div class="items-actions">
+        <button id="items-refresh" type="button" class="small-action">Vérifier les champs Unity</button>
+        <button id="items-read" type="button" class="small-action">Comparer les assets Unity</button>
+        <button id="items-import" type="button" class="small-action" hidden>Importer la fiche sélectionnée dans Unity</button>
+        <button id="items-import-all" type="button" class="small-action" hidden>Importer le catalogue dans Unity</button>
+        <button id="items-jobs" type="button" class="small-action">Actualiser / voir les demandes</button>
+      </div>
+      <div id="items-content"></div>
+    </aside>
   </body>
 </html>

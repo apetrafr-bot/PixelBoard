@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/unity-lib.php';
 
 function pixelboard_install_backups(PDO $db): void
 {
@@ -31,7 +32,7 @@ function pixelboard_valid_backup_records(mixed $records): bool
             || $record['board_id'] === '' || strlen($record['board_id']) > 80
             || isset($ids[$record['board_id']]) || !is_string($record['data'] ?? null)) return false;
         $data = json_decode($record['data'], true);
-        if (!is_array($data) || ($data['id'] ?? null) !== $record['board_id'] || !is_array($data['items'] ?? null)) return false;
+        if (!is_array($data) || ($data['id'] ?? null) !== $record['board_id'] || !is_array($data['items'] ?? null) || !pb_catalogue_valid($data)) return false;
         $ids[$record['board_id']] = true;
     }
     return true;

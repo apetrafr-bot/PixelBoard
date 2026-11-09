@@ -1,5 +1,7 @@
 Options -Indexes
 
-<Files "config.php">
+SetEnvIfNoCase Authorization "(.+)" HTTP_AUTHORIZATION=$1
+
+<FilesMatch "^(config\.php|unity-schema\.sql)$">
   Require all denied
-</Files>
+</FilesMatch>
