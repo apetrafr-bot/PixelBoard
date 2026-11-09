@@ -1,6 +1,6 @@
 # PixelBoard
 
-Un atelier visuel en français pour disposer librement notes, images, liens, tableaux imbriqués et tâches. Le canvas se déplace dans toutes les directions et les images agrandies conservent leurs pixels nets.
+Un atelier visuel en français pour disposer librement notes, images, liens, tableaux imbriqués et tâches. Le canvas se déplace dans toutes les directions et les images agrandies conservent leurs pixels nets.ssssssssssss
 
 ## Lancer en local
 
