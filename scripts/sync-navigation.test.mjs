@@ -8,6 +8,23 @@ const start = source.indexOf("async function syncRemoteChanges()");
 const end = source.indexOf("\nfunction ", start);
 const sync = source.slice(start, end);
 
+test("connector tips stop at card borders instead of inside content", () => {
+  const code = source.slice(source.indexOf("function connectorBorderPoint("), source.indexOf("\nfunction cardAnchor("));
+  const context = vm.createContext({});
+  vm.runInContext(code, context);
+  const rect = { x: 100, y: 200, width: 200, height: 100 };
+  for (const [toward, expected] of [
+    [{ x: 200, y: 0 }, { x: 200, y: 200 }],
+    [{ x: 200, y: 700 }, { x: 200, y: 300 }],
+    [{ x: 0, y: 250 }, { x: 100, y: 250 }],
+    [{ x: 900, y: 250 }, { x: 300, y: 250 }],
+  ]) {
+    const result = context.connectorBorderPoint(rect, { x: 200, y: 250 }, toward);
+    assert.equal(result.x, expected.x);
+    assert.equal(result.y, expected.y);
+  }
+});
+
 test("connector curves bend on either side while preserving endpoints", () => {
   const code = source.slice(source.indexOf("function connectorPath("), source.indexOf("\nfunction anchorAtWorldPoint("));
   const context = vm.createContext({});

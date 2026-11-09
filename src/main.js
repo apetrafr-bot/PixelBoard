@@ -533,7 +533,7 @@ function buildCard(item) {
   grip.setAttribute("aria-label", `Déplacer ${cardDescription(item)}`);
   grip.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown ArrowLeft ArrowRight");
 
-  const labels = { note: "Note", image: "Image", link: "Lien", board: "Tableau", todo: "Tâche" };
+  const labels = { note: "Note", image: "Image", link: "Lien", board: "Tableau", todo: Array.isArray(item.entries) ? "Liste" : "Tâche" };
   const label = document.createElement("span");
   label.className = "grip-label";
   label.innerHTML = `<span class="grip-symbol" aria-hidden="true">⠿</span><span>${labels[item.type] ?? "Carte"}</span>`;
@@ -878,6 +878,7 @@ function renderTodoCard(card, item) {
   checkbox.addEventListener("click", () => {
     snapshotState();
     item.status = item.status === "done" ? "todo" : "done";
+    if (Array.isArray(item.entries)) item.entries.forEach((entry) => { entry.done = item.status === "done"; });
     renderBoard();
     scheduleSave();
   });
@@ -886,6 +887,10 @@ function renderTodoCard(card, item) {
   title.value = item.title || "";
   title.maxLength = 120;
   title.setAttribute("aria-label", "Description de la tâche");
+  if (Array.isArray(item.entries)) {
+    title.placeholder = "Titre de la liste (facultatif)";
+    title.setAttribute("aria-label", "Titre de la liste (facultatif)");
+  }
   title.addEventListener("focus", snapshotState, { once: true });
   title.addEventListener("input", () => { item.title = title.value; scheduleSave(); });
   const details = document.createElement("div");
@@ -899,6 +904,7 @@ function renderTodoCard(card, item) {
   status.addEventListener("change", () => {
     snapshotState();
     item.status = status.value;
+    if (Array.isArray(item.entries) && item.status !== "doing") item.entries.forEach((entry) => { entry.done = item.status === "done"; });
     renderBoard();
     scheduleSave();
   });
@@ -920,7 +926,71 @@ function renderTodoCard(card, item) {
   badge.style.setProperty("--member-color", responsible?.color || "#d3ded0");
   details.prepend(badge);
   content.append(checkbox, title, details);
+  if (Array.isArray(item.entries)) {
+    const list = document.createElement("div");
+    list.className = "checklist-entries";
+    item.entries.forEach((entry) => {
+      const row = document.createElement("div");
+      row.className = "checklist-row";
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.checked = entry.done;
+      check.setAttribute("aria-label", `Terminer ${entry.text || "cette tâche"}`);
+      check.addEventListener("change", () => {
+        snapshotState();
+        entry.done = check.checked;
+        updateChecklistStatus(item);
+        renderBoard();
+        scheduleSave();
+      });
+      const text = document.createElement("input");
+      text.className = `todo-title ${entry.done ? "is-done" : ""}`;
+      text.value = entry.text;
+      text.maxLength = 120;
+      text.placeholder = "Une tâche…";
+      text.setAttribute("aria-label", "Description de la tâche de liste");
+      text.addEventListener("focus", snapshotState, { once: true });
+      text.addEventListener("input", () => {
+        entry.text = text.value;
+        check.setAttribute("aria-label", `Terminer ${entry.text || "cette tâche"}`);
+        scheduleSave();
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "checklist-remove";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", "Supprimer cette tâche de la liste");
+      remove.addEventListener("click", () => {
+        snapshotState();
+        item.entries = item.entries.filter((candidate) => candidate !== entry);
+        updateChecklistStatus(item);
+        renderBoard();
+        scheduleSave();
+      });
+      row.append(check, text, remove);
+      list.append(row);
+    });
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "checklist-add";
+    add.textContent = "＋ Ajouter une tâche";
+    add.addEventListener("click", () => {
+      snapshotState();
+      item.entries.push({ text: "", done: false });
+      updateChecklistStatus(item);
+      renderBoard();
+      scheduleSave();
+      canvas.querySelector(`[data-id="${CSS.escape(item.id)}"] .checklist-row:last-child .todo-title`)?.focus();
+    });
+    content.insertBefore(list, details);
+    content.insertBefore(add, details);
+  }
   card.append(content);
+}
+
+function updateChecklistStatus(item) {
+  item.status = item.entries.length && item.entries.every((entry) => entry.done)
+    ? "done" : item.entries.some((entry) => entry.done) ? "doing" : "todo";
 }
 
 function renderVectorItems() {
@@ -933,8 +1003,8 @@ function renderVectorItems() {
   marker.setAttribute("viewBox", "0 0 10 10");
   marker.setAttribute("refX", "9");
   marker.setAttribute("refY", "5");
-  marker.setAttribute("markerWidth", "7");
-  marker.setAttribute("markerHeight", "7");
+  marker.setAttribute("markerWidth", "5");
+  marker.setAttribute("markerHeight", "5");
   marker.setAttribute("orient", "auto-start-reverse");
   const arrow = document.createElementNS("http://www.w3.org/2000/svg", "path");
   arrow.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
@@ -954,8 +1024,8 @@ function renderVectorItems() {
       line.setAttribute("d", d);
       line.setAttribute("fill", "none");
       line.setAttribute("stroke", item.color || "#000000");
-      line.setAttribute("stroke-width", "3");
-      line.setAttribute("stroke-linecap", "square");
+      line.setAttribute("stroke-width", "2");
+      line.setAttribute("stroke-linecap", "round");
       line.setAttribute("marker-end", "url(#pixelboard-arrowhead)");
       line.dataset.id = item.id;
       line.classList.add("canvas-vector");
@@ -1035,10 +1105,15 @@ function appendConnectorHandle(item, endpoint, point) {
 }
 
 function connectorPath({ start, end }, curve) {
+  const control = connectorControlPoint(start, end, curve);
+  return `M ${start.x} ${start.y} Q ${control.x} ${control.y} ${end.x} ${end.y}`;
+}
+
+function connectorControlPoint(start, end, curve) {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const length = Math.hypot(dx, dy) || 1;
-  return `M ${start.x} ${start.y} Q ${(start.x + end.x) / 2 - dy / length * curve} ${(start.y + end.y) / 2 + dx / length * curve} ${end.x} ${end.y}`;
+  return { x: (start.x + end.x) / 2 - dy / length * curve, y: (start.y + end.y) / 2 + dx / length * curve };
 }
 
 function anchorAtWorldPoint(itemId, point) {
@@ -1111,10 +1186,35 @@ function deleteSelectedVector() {
 function connectorEndpoints(item) {
   const start = cardAnchor(item.fromId, item.fromAnchor);
   const end = cardAnchor(item.toId, item.toAnchor);
-  return {
-    start: start || { x: item.x1 ?? 0, y: item.y1 ?? 0 },
-    end: end || { x: item.x2 ?? 0, y: item.y2 ?? 0 },
+  const rawStart = start || { x: item.x1 ?? 0, y: item.y1 ?? 0 };
+  const rawEnd = end || { x: item.x2 ?? 0, y: item.y2 ?? 0 };
+  const control = connectorControlPoint(rawStart, rawEnd, item.curve || 0);
+  const borderPoint = (id, point, toward) => {
+    const card = id && canvas.querySelector(`[data-id="${CSS.escape(id)}"]`);
+    if (!card) return point;
+    return connectorBorderPoint({
+      x: card.offsetLeft, y: card.offsetTop,
+      width: card.offsetWidth, height: card.offsetHeight,
+    }, point, toward);
   };
+  return {
+    start: borderPoint(item.fromId, rawStart, control),
+    end: borderPoint(item.toId, rawEnd, control),
+  };
+}
+
+function connectorBorderPoint(rect, point, toward) {
+  let dx = toward.x - point.x;
+  let dy = toward.y - point.y;
+  if (Math.abs(dx) + Math.abs(dy) < .001) {
+    dx = point.x - (rect.x + rect.width / 2);
+    dy = point.y - (rect.y + rect.height / 2);
+    if (Math.abs(dx) + Math.abs(dy) < .001) dy = 1;
+  }
+  const tx = dx > 0 ? (rect.x + rect.width - point.x) / dx : dx < 0 ? (rect.x - point.x) / dx : Infinity;
+  const ty = dy > 0 ? (rect.y + rect.height - point.y) / dy : dy < 0 ? (rect.y - point.y) / dy : Infinity;
+  const t = Math.max(0, Math.min(tx, ty));
+  return { x: point.x + dx * t, y: point.y + dy * t };
 }
 
 function cardAnchor(itemId, anchor = { x: .5, y: .5 }) {
@@ -1297,7 +1397,7 @@ function addLink(position = viewportCenter()) {
 
 function addTask(position = viewportCenter(), values = {}) {
   snapshotState();
-  board.items.push({ id: newId(), type: "todo", x: position.x, y: position.y, z: ++lastZIndex, title: values.title || "", status: values.status || "todo", assigneeId: values.assigneeId || null });
+  board.items.push({ id: newId(), type: "todo", x: position.x, y: position.y, z: ++lastZIndex, title: values.title || "", status: values.status || "todo", assigneeId: values.assigneeId || null, ...(values.entries ? { entries: values.entries } : {}) });
   renderBoard();
   scheduleSave();
 }
@@ -1712,7 +1812,7 @@ function allStoredBoards() {
 function allTasks() {
   return allStoredBoards().flatMap((record) => (record.items || [])
     .filter((item) => item.type === "todo")
-    .map((item) => ({ ...item, boardTitle: record.title, boardId: record.id })));
+    .map((item) => ({ ...item, title: item.title || (Array.isArray(item.entries) ? "Liste sans titre" : ""), boardTitle: record.title, boardId: record.id })));
 }
 
 function avatarInitials(name) {
@@ -2297,6 +2397,7 @@ function updateTaskStatus(task, status) {
   if (!item) return;
   snapshotState();
   item.status = status;
+  if (Array.isArray(item.entries) && status !== "doing") item.entries.forEach((entry) => { entry.done = status === "done"; });
   if (targetBoard.id === board.id) renderBoard();
   else {
     boardRecords.set(targetBoard.id, structuredClone(targetBoard));
@@ -2388,6 +2489,7 @@ function initEvents() {
   $("#tool-note").addEventListener("click", () => addNote());
   $("#tool-link").addEventListener("click", () => addLink());
   $("#tool-todo").addEventListener("click", () => addTask());
+  $("#tool-checklist").addEventListener("click", () => addTask(viewportCenter(), { entries: [{ text: "", done: false }] }));
   $("#tool-board").addEventListener("click", () => addNestedBoard());
   $("#tool-image").addEventListener("click", () => imageInput.click());
   $("#tool-trash").addEventListener("click", confirmEmptyBoard);

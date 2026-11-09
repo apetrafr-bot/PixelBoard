@@ -95,6 +95,10 @@ Les quatre coins des cartes permettent de modifier largeur et hauteur au pointeu
 
 Les poignées de carte sont discrètes (sans carrés verts) et restent accessibles au clavier. La barre du haut tient sur une seule ligne; sur écran étroit, elle défile horizontalement pour conserver toutes les actions. Dans Mon compte, l'aperçu affiche la photo actuelle; « Retirer » apparaît seulement lorsqu'une photo existe.
 
+Les connecteurs attachés se terminent aux bordures des cartes plutôt que dans leur contenu. Les points d'ancrage enregistrés sont conservés; le rendu se recalcule lorsque les cartes bougent ou changent de taille. Le trait et les pointes sont affinés.
+
+Le bouton « Liste » crée une carte avec un titre facultatif et plusieurs tâches à cocher, modifiables et supprimables individuellement. « Ajouter une tâche » ajoute une ligne. La liste peut être assignée à un membre comme une tâche classique; son état suit les cases cochées. Dans le panneau Tâches, elle apparaît comme une seule liste : la terminer coche toutes ses lignes, la remettre à faire les décoche. Les listes sont conservées dans les mêmes sauvegardes locales, exports et tableaux partagés que les autres cartes; aucune migration SQL n'est nécessaire.
+
 ### Retrouver les tableaux partagés
 
 Les comptes doivent appartenir au même espace (inscription via l'invitation du propriétaire). Les tableaux créés hors connexion restent locaux : utilisez **Mon compte → Importer les tableaux de cet appareil** pour en ajouter des copies au serveur. La liste de tableaux dans la barre verte permet d'ouvrir directement tout tableau chargé de l'espace. **Actualiser** récupère les changements partagés; la synchronisation automatique intervient toutes les 15 secondes hors saisie/interaction en cours. **Recentrer** ramène la vue sur les cartes sans les déplacer.

@@ -262,6 +262,16 @@ body.auth-locked .app-shell { display: none; }
 .todo-check.is-done { background: #bfe477; }
 .todo-title { width: 100%; border: 0; outline: 0; background: transparent; color: #243d30; font-size: 12px; font-weight: 700; }
 .todo-title.is-done { color: #5f6a58; text-decoration: line-through; }
+.checklist-entries, .checklist-add { grid-column: 1 / -1; }
+.checklist-entries { display: grid; gap: 4px; margin-top: 8px; }
+.checklist-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 28px; align-items: center; gap: 6px; min-height: 32px; border-bottom: 1px solid #cbd2b6; }
+.checklist-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: #365747; cursor: pointer; }
+.checklist-row .todo-title { font-weight: 400; padding: 6px 0; }
+.checklist-remove, .checklist-add { border: 0; background: transparent; color: #365747; cursor: pointer; min-height: 32px; }
+.checklist-remove { font-size: 20px; }
+.checklist-add { justify-self: start; padding: 6px 0; font: 600 12px var(--sans); margin-bottom: 8px; }
+.checklist-remove:hover, .checklist-add:hover { background: #dce5c5; }
+.checklist-row input:focus-visible, .checklist-add:focus-visible, .checklist-remove:focus-visible { outline: 2px solid #365747; outline-offset: 2px; }
 .todo-meta { display: flex; grid-column: 2; gap: 5px; }
 .todo-meta select { min-width: 0; max-width: 50%; border: 1px solid #bbc9ad; background: #f8f8e9; padding: 4px; color: #364d3c; font-size: 9px; }
 
