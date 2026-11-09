@@ -6,8 +6,8 @@
     <meta name="theme-color" content="#173a35" />
     <meta name="description" content="Un espace visuel local pour organiser idées, images, tableaux et tâches d’équipe." />
     <title>PixelBoard — Atelier d’idées</title>
-    <script type="module" crossorigin src="/assets/index-BMbttrBB.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-D6Eb3Xc-.css">
+    <script type="module" crossorigin src="/assets/index-BsZpZzAo.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-B-CVuh3J.css">
   </head>
   <body class="auth-locked">
     <main class="login-page" id="login-page" aria-labelledby="login-page-title">
@@ -186,8 +186,11 @@
             <button class="small-action auth-switch" id="auth-mode-toggle" type="button">Créer un compte avec une invitation</button>
           </div>
           <div class="account-card" id="account-controls" hidden>
-            <label>Ma photo de profil<input id="profile-photo" type="file" accept="image/png,image/jpeg,image/webp" /></label>
-            <button id="remove-profile-photo" class="small-action" type="button">Retirer ma photo</button>
+            <div class="profile-photo-row">
+              <img id="profile-photo-preview" class="profile-photo-preview" alt="Ma photo de profil" hidden />
+              <label class="photo-upload">Changer ma photo<input id="profile-photo" type="file" accept="image/png,image/jpeg,image/webp" /></label>
+              <button id="remove-profile-photo" class="small-action" type="button" hidden>Retirer</button>
+            </div>
             <p id="account-summary"></p>
             <p class="sync-warning" id="sync-warning" hidden></p>
             <div class="account-actions">

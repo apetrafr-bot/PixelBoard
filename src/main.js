@@ -2041,6 +2041,10 @@ function renderAuthControls() {
   forms.hidden = Boolean(remoteSession);
   account.hidden = !remoteSession;
   const entry = $("#profile-button");
+  $("#remove-profile-photo").hidden = !remoteSession?.avatar;
+  const preview = $("#profile-photo-preview");
+  preview.hidden = !remoteSession?.avatar;
+  preview.setAttribute("src", remoteSession?.avatar || "");
   entry.textContent = remoteSession ? "Mon compte" : "Connexion";
   if (remoteSession?.avatar) {
     const photo = document.createElement("img");

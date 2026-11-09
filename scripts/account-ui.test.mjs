@@ -97,6 +97,8 @@ for (const state of ["checking", "missing", "error", "ready"]) {
     assert.equal($("#auth-section").hidden, false);
     assert.equal($("#auth-forms").hidden, false);
     assert.equal($("#profile-button").textContent, "Connexion");
+    assert.equal($("#remove-profile-photo").hidden, true);
+    assert.equal($("#profile-photo-preview").hidden, true);
     assert.equal($("#login-form").controls[0].disabled, state !== "ready");
     assert.equal($("#register-form").controls[0].disabled, state !== "ready");
     assert.equal($("#account-setup").open, state === "missing" || state === "error");

@@ -93,6 +93,8 @@ Pour une base existante, importez **une seule fois `api/migration-avatar.sql`** 
 
 Les quatre coins des cartes permettent de modifier largeur et hauteur au pointeur/toucher ou aux flèches. Les connecteurs neufs sont noirs; sélectionnez-en un pour régler sa couleur et sa courbure. Les couleurs explicites des connecteurs existants sont conservées. En cas de conflit, exportez votre copie avant **Mon compte → Recharger la copie serveur** si vous souhaitez conserver les changements locaux.
 
+Les poignées de carte sont discrètes (sans carrés verts) et restent accessibles au clavier. La barre du haut tient sur une seule ligne; sur écran étroit, elle défile horizontalement pour conserver toutes les actions. Dans Mon compte, l'aperçu affiche la photo actuelle; « Retirer » apparaît seulement lorsqu'une photo existe.
+
 ### Retrouver les tableaux partagés
 
 Les comptes doivent appartenir au même espace (inscription via l'invitation du propriétaire). Les tableaux créés hors connexion restent locaux : utilisez **Mon compte → Importer les tableaux de cet appareil** pour en ajouter des copies au serveur. La liste de tableaux dans la barre verte permet d'ouvrir directement tout tableau chargé de l'espace. **Actualiser** récupère les changements partagés; la synchronisation automatique intervient toutes les 15 secondes hors saisie/interaction en cours. **Recentrer** ramène la vue sur les cartes sans les déplacer.

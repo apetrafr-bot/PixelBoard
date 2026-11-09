@@ -184,8 +184,11 @@
             <button class="small-action auth-switch" id="auth-mode-toggle" type="button">Créer un compte avec une invitation</button>
           </div>
           <div class="account-card" id="account-controls" hidden>
-            <label>Ma photo de profil<input id="profile-photo" type="file" accept="image/png,image/jpeg,image/webp" /></label>
-            <button id="remove-profile-photo" class="small-action" type="button">Retirer ma photo</button>
+            <div class="profile-photo-row">
+              <img id="profile-photo-preview" class="profile-photo-preview" alt="Ma photo de profil" hidden />
+              <label class="photo-upload">Changer ma photo<input id="profile-photo" type="file" accept="image/png,image/jpeg,image/webp" /></label>
+              <button id="remove-profile-photo" class="small-action" type="button" hidden>Retirer</button>
+            </div>
             <p id="account-summary"></p>
             <p class="sync-warning" id="sync-warning" hidden></p>
             <div class="account-actions">
