@@ -8,99 +8,132 @@ function load(name, context) {
   const start = source.indexOf(`function ${name}(`);
   vm.runInContext(source.slice(start, source.indexOf("\nfunction ", start + 1)), context);
 }
+let sequence = 0;
+const newId = () => `entry-${++sequence}`;
 
-test("checklist status follows empty, partial and complete lists", () => {
-  const context = vm.createContext({});
-  load("updateChecklistStatus", context);
-  const item = { title: "", entries: [] };
-  context.updateChecklistStatus(item);
-  assert.equal(item.status, "todo");
-  item.entries.push({ text: "Dessiner", done: false }, { text: "Publier", done: false });
-  context.updateChecklistStatus(item);
-  assert.equal(item.status, "todo");
-  item.entries[0].done = true;
-  context.updateChecklistStatus(item);
-  assert.equal(item.status, "doing");
-  item.entries[1].done = true;
-  context.updateChecklistStatus(item);
-  assert.equal(item.status, "done");
-  item.entries = [];
-  context.updateChecklistStatus(item);
-  assert.equal(item.status, "todo");
-  assert.equal(item.title, "");
+test("legacy lists retain checked state and attribution, explicit unassignment stays unassigned", () => {
+  const context = vm.createContext({ newId });
+  load("prepareChecklist", context);
+  const item = { assigneeId: "alice", entries: [
+    { text: "A", done: true }, { text: "B", done: false },
+    { text: "C", status: "doing", assigneeId: null },
+  ] };
+  context.prepareChecklist(item);
+  assert.deepEqual(item.entries.map((entry) => entry.status), ["done", "todo", "doing"]);
+  assert.deepEqual(item.entries.map((entry) => entry.assigneeId), ["alice", "alice", null]);
+  const ids = item.entries.map((entry) => entry.id);
+  item.entries[0].assigneeId = null;
+  context.prepareChecklist(item);
+  assert.equal(item.entries[0].assigneeId, null);
+  assert.deepEqual(item.entries.map((entry) => entry.id), ids);
 });
 
-test("lists and existing tasks both remain in team tasks", () => {
+test("list progress handles empty, doing and completed rows", () => {
+  const context = vm.createContext({});
+  load("updateChecklistStatus", context);
+  const item = { entries: [] };
+  context.updateChecklistStatus(item);
+  assert.equal(item.status, "todo");
+  item.entries = [{ status: "doing" }, { status: "todo" }];
+  context.updateChecklistStatus(item);
+  assert.equal(item.status, "doing");
+  item.entries.forEach((entry) => { entry.status = "done"; });
+  context.updateChecklistStatus(item);
+  assert.equal(item.status, "done");
+  assert.ok(item.entries.every((entry) => entry.done));
+});
+
+test("team tasks enumerate individual list rows and preserve classic tasks", () => {
   const context = vm.createContext({
-    allStoredBoards: () => [{ id: "board", title: "Projet", items: [
-      { id: "list", type: "todo", title: "", entries: [], status: "todo" },
+    newId, allStoredBoards: () => [{ id: "board", title: "Projet", items: [
+      { id: "list", type: "todo", title: "Dessin", entries: [
+        { id: "a", text: "A", status: "doing", assigneeId: "alice" },
+        { id: "b", text: "B", status: "todo", assigneeId: "bob" },
+      ] },
       { id: "task", type: "todo", title: "Ancienne tâche", status: "done" },
     ] }],
   });
-
+  load("prepareChecklist", context);
   load("allTasks", context);
   const tasks = context.allTasks();
-  assert.equal(tasks.length, 2);
-  assert.equal(tasks[0].title, "Liste sans titre");
-  assert.equal(tasks[1].title, "Ancienne tâche");
+  assert.equal(tasks.length, 3);
+  assert.equal(tasks[0].entryId, "a");
+  assert.equal(tasks[0].assigneeId, "alice");
+  assert.equal(tasks[1].assigneeId, "bob");
+  assert.equal(tasks[2].title, "Ancienne tâche");
+  assert.equal(tasks[0].id, "list");
 });
 
-test("list card supports optional title, editing, checking, adding and removing rows", () => {
-    class Element {
-      children = [];
-      events = {};
-      style = { setProperty() {} };
-      append(...elements) { this.children.push(...elements); }
-      prepend(...elements) { this.children.unshift(...elements); }
-      add(element) { this.append(element); }
-      setAttribute() {}
-      addEventListener(name, callback) { this.events[name] = callback; }
-      insertBefore(element, before) { this.children.splice(this.children.indexOf(before), 0, element); }
-    }
-    let saved = 0;
+test("list UI edits per-row tags, adds unassigned rows and removes independently", () => {
+  class Element {
+    children = [];
+    events = {};
+    classList = { add() {} };
+    style = { setProperty() {} };
+    append(...elements) { this.children.push(...elements); }
+    add(element) { this.append(element); }
+    setAttribute() {}
+    addEventListener(name, callback) { this.events[name] = callback; }
+  }
+  let saved = 0;
+  const context = vm.createContext({
+    newId, document: { createElement: () => new Element() },
+    Option: class {}, members: [{ id: "alice", name: "Alice" }, { id: "bob", name: "Bob" }],
+    getMember() {}, snapshotState() {}, renderBoard() {},
+    scheduleSave() { saved++; },
+    canvas: { querySelector() { return null; } }, CSS: { escape: (value) => value },
+  });
+  for (const name of ["prepareChecklist", "updateChecklistStatus", "renderChecklistCard", "renderTodoCard"]) load(name, context);
+  const item = { id: "list", title: "", entries: [{ text: "", done: false }, { text: "B", done: false }] };
+  const card = new Element();
+  context.renderTodoCard(card, item);
+  const [title, list, add] = card.children[0].children;
+  assert.equal(title.placeholder, "Titre (facultatif)");
+  const [check, text, remove, tags] = list.children[0].children;
+  text.value = "Préparer le dessin";
+  text.events.input();
+  assert.equal(item.entries[0].text, text.value);
+  const [assignee, status] = tags.children;
+  assignee.value = "alice";
+  assignee.events.change();
+  assert.equal(item.entries[0].assigneeId, "alice");
+  assert.equal(item.entries[1].assigneeId, null);
+  status.value = "doing";
+  status.events.change();
+  assert.equal(item.entries[0].status, "doing");
+  assert.equal(item.status, "doing");
+  check.checked = true;
+  check.events.change();
+  assert.equal(item.entries[0].status, "done");
+  assert.equal(item.entries[1].status, "todo");
+  add.events.click();
+  assert.equal(item.entries.length, 3);
+  assert.equal(item.entries[2].assigneeId, null);
+  remove.events.click();
+  assert.equal(item.entries.length, 2);
+  assert.equal(saved, 6);
+});
+
+test("team status changes affect only the targeted list row, active or background board", async () => {
+  for (const active of [true, false]) {
+    const item = { id: "list", entries: [
+      { id: "a", status: "doing", assigneeId: "alice" }, { id: "b", status: "todo", assigneeId: "bob" },
+    ] };
+    const target = { id: "board", items: [item] };
+    let persisted;
     const context = vm.createContext({
-      document: { createElement: () => new Element() },
-      Option: class {}, members: [], getMember() {}, snapshotState() {},
-      renderBoard() {}, scheduleSave() { saved++; },
-      canvas: { querySelector() { return null; } }, CSS: { escape: (value) => value },
+      structuredClone, board: active ? target : { id: "elsewhere" },
+      boardRecords: new Map([[target.id, target]]), snapshotState() {}, renderBoard() {}, renderTeam() {},
+      persistRecords: (records) => { persisted = records[0]; return Promise.resolve(); },
+      WORKSPACE_ID: "workspace", members: [], setSaveStatus() {}, reportSaveError() {},
     });
     load("updateChecklistStatus", context);
-    load("renderTodoCard", context);
-    const item = { id: "list", title: "", entries: [{ text: "", done: false }] };
-    const card = new Element();
-    context.renderTodoCard(card, item);
-    const content = card.children[0];
-    assert.equal(content.children[1].placeholder, "Titre de la liste (facultatif)");
-    const list = content.children.find((element) => element.className === "checklist-entries");
-    const [check, text, remove] = list.children[0].children;
-    text.value = "Préparer le dessin";
-    text.events.input();
-    assert.equal(item.entries[0].text, text.value);
-    check.checked = true;
-    check.events.change();
-    assert.equal(item.status, "done");
-    content.children.find((element) => element.className === "checklist-add").events.click();
-    assert.equal(item.entries.length, 2);
-    assert.equal(item.status, "doing");
-    remove.events.click();
-    assert.equal(item.entries.length, 1);
-    assert.equal(item.status, "todo");
-    assert.equal(saved, 4);
-  });
-
-test("team status changes check all list entries without losing partial progress for doing", () => {
-  const item = { id: "list", type: "todo", entries: [{ text: "A", done: true }, { text: "B", done: false }] };
-  const board = { id: "board", items: [item] };
-  const context = vm.createContext({
-    board, boardRecords: new Map(), snapshotState() {}, renderBoard() {},
-    persistRecords: () => Promise.resolve(), WORKSPACE_ID: "workspace", members: [],
-    setSaveStatus() {}, reportSaveError() {},
-  });
-  load("updateTaskStatus", context);
-  context.updateTaskStatus({ id: item.id, boardId: board.id }, "doing");
-  assert.deepEqual(item.entries.map((entry) => entry.done), [true, false]);
-  context.updateTaskStatus({ id: item.id, boardId: board.id }, "done");
-  assert.ok(item.entries.every((entry) => entry.done));
-  context.updateTaskStatus({ id: item.id, boardId: board.id }, "todo");
-  assert.ok(item.entries.every((entry) => !entry.done));
+    load("updateTaskStatus", context);
+    context.updateTaskStatus({ id: "list", boardId: "board", entryId: "a" }, "done");
+    assert.equal(item.entries[0].status, "done");
+    assert.equal(item.entries[1].status, "todo");
+    assert.equal(item.entries[1].assigneeId, "bob");
+    assert.equal(persisted.id, "board");
+    await Promise.resolve();
+  }
 });

@@ -97,9 +97,23 @@ Les poignées de carte sont discrètes (sans carrés verts) et restent accessibl
 
 Les connecteurs attachés se terminent aux bordures des cartes plutôt que dans leur contenu. Les points d'ancrage enregistrés sont conservés; le rendu se recalcule lorsque les cartes bougent ou changent de taille. Le trait et les pointes sont affinés.
 
-Le bouton « Liste » crée une carte avec un titre facultatif et plusieurs tâches à cocher, modifiables et supprimables individuellement. « Ajouter une tâche » ajoute une ligne. La liste peut être assignée à un membre comme une tâche classique; son état suit les cases cochées. Dans le panneau Tâches, elle apparaît comme une seule liste : la terminer coche toutes ses lignes, la remettre à faire les décoche. Les listes sont conservées dans les mêmes sauvegardes locales, exports et tableaux partagés que les autres cartes; aucune migration SQL n'est nécessaire.
+Le bouton « Liste » crée une carte compacte avec un titre facultatif et plusieurs tâches à cocher, modifiables et supprimables individuellement. Chaque tâche possède deux tags modifiables : son responsable et son état (À faire, En cours, Terminée). « Ajouter une tâche » ajoute une ligne sans responsable. Chaque ligne apparaît aussi dans le panneau Tâches et dans le profil du membre assigné; changer son état ne modifie pas les autres lignes. Les anciennes listes conservent leurs cases et leur attribution initiale, désormais modifiable par ligne. Les listes sont conservées dans les mêmes sauvegardes locales, exports et tableaux partagés que les autres cartes; aucune migration SQL n'est nécessaire.
 
-### Retrouver les tableaux partagés
+### Version de travail et copie protégée administrateur
+
+Pour une base existante, importez **une seule fois `api/migration-backups.sql` dans phpMyAdmin**, puis publiez le nouveau `dist` (interface et API). Ne réimportez pas `schema.sql` sur une base existante. Sans cette migration, le site et les comptes restent utilisables; les boutons de protection affichent une erreur explicite. Pour une base neuve, la table est incluse dans `schema.sql`.
+
+Dans **Mon compte → Copie protégée administrateur**, le propriétaire dispose de :
+
+- **Valider cette version** : enregistre le travail puis copie tous les tableaux de l’espace, y compris leurs images et listes, dans un emplacement serveur protégé. Une nouvelle validation remplace la précédente. Il faut effectuer cette première validation pour activer la protection; aucune copie administrateur n’est inventée automatiquement.
+- **Restaurer la version validée** : remet les tableaux validés dans l’espace de travail. Les tableaux créés après la validation restent conservés. Une carte/tableau supprimé par un membre peut ainsi être retrouvé avec son contenu et ses liens validés.
+- **Récupérer le travail avant restauration** : restaure la copie de travail prise juste avant la dernière restauration. Chaque restauration remplace cet emplacement de secours; ce n’est pas un historique illimité.
+
+La version courante reste dans `boards`; la référence validée et le travail avant restauration sont dans `workspace_backups`. Les écritures ordinaires des membres ne touchent jamais ces copies. Les opérations de protection sont réservées au propriétaire côté API, avec session et CSRF. Les écritures et les copies verrouillent le même espace dans une transaction; un changement concurrent non encore chargé provoque un refus plutôt qu’un écrasement silencieux. Les versions des tableaux restaurés augmentent pour que les anciennes copies des autres navigateurs provoquent un conflit au prochain enregistrement au lieu d’écraser la restauration.
+
+La protection concerne les tableaux de l’espace, pas les comptes, profils ou codes d’invitation. Elle ne remplace pas une sauvegarde externe Hostinger/MySQL : une suppression de la base ou de l’espace par un accès administrateur à l’hébergement supprimerait aussi ces copies.
+
+### Accéder aux tableaux de l’équipe
 
 Les comptes doivent appartenir au même espace (inscription via l'invitation du propriétaire). Les tableaux créés hors connexion restent locaux : utilisez **Mon compte → Importer les tableaux de cet appareil** pour en ajouter des copies au serveur. La liste de tableaux dans la barre verte permet d'ouvrir directement tout tableau chargé de l'espace. **Actualiser** récupère les changements partagés; la synchronisation automatique intervient toutes les 15 secondes hors saisie/interaction en cours. **Recentrer** ramène la vue sur les cartes sans les déplacer.
 

@@ -60,7 +60,7 @@ for (const editing of [false, true]) {
     const context = vm.createContext({
       document: { activeElement: active }, canvas: { contains: () => true },
       teamPanel: { contains: () => false }, remoteSession: { id: 1 },
-      remoteSyncInFlight: false, remoteWritesInFlight: 0, saveTimer: null,
+      backupBusy: false, remoteSyncInFlight: false, remoteWritesInFlight: 0, saveTimer: null,
       panGesture: null, drawingGesture: null, connectionGesture: null, connectorResizeGesture: null,
       pendingRemoteBoardIds: new Set(), remoteVersions: new Map(), boardRecords: new Map(),
       board: { id: "root" }, members: [], structuredClone, console,

@@ -194,6 +194,16 @@
             </div>
             <p id="account-summary"></p>
             <p class="sync-warning" id="sync-warning" hidden></p>
+            <div id="backup-controls" hidden>
+              <h4>Copie protégée administrateur</h4>
+              <p>Validez tous les tableaux de l’espace pour conserver une référence que les membres ne peuvent pas remplacer.</p>
+              <p id="backup-status" role="status" aria-live="polite"></p>
+              <div class="account-actions">
+                <button class="button button-quiet" id="backup-approve" type="button">Valider cette version</button>
+                <button class="button button-quiet" id="backup-restore" type="button">Restaurer la version validée</button>
+                <button class="button button-quiet" id="backup-undo-restore" type="button">Récupérer le travail avant restauration</button>
+              </div>
+            </div>
             <div class="account-actions">
               <button class="button button-quiet" id="invite-create" type="button" hidden>Créer un code d’invitation</button>
               <button class="button button-quiet" id="import-local" type="button" hidden>Importer les tableaux de cet appareil</button>

@@ -363,6 +363,84 @@ try {
         pixelboard_reply(201, ['invite_code' => $code]);
     }
 
+    if ($action === 'backup' && in_array($method, ['GET', 'POST'], true)) {
+        pixelboard_require_owner($user);
+        // Existing sites remain usable until the additive migration is installed.
+        $table = $db->query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workspace_backups'")->fetchColumn();
+        if ($table === false) {
+            pixelboard_fail(503, 'Protection non installée : importez uniquement api/migration-backups.sql dans la base existante.');
+        }
+        if ($method === 'GET') {
+            $query = $db->prepare('SELECT slot, revision, saved_at FROM workspace_backups WHERE workspace_id = ?');
+            $query->execute([$workspaceId]);
+            pixelboard_reply(200, ['backups' => $query->fetchAll()]);
+        }
+        pixelboard_require_csrf();
+        $input = pixelboard_body();
+        $operation = $input['operation'] ?? '';
+        $slot = $input['slot'] ?? 'approved';
+        if (!in_array($operation, ['approve', 'restore'], true)
+            || !in_array($slot, ['approved', 'before_restore'], true)
+            || !is_array($input['versions'] ?? null)) {
+            pixelboard_fail(422, 'Demande de sauvegarde invalide.');
+        }
+        $db->beginTransaction();
+        try {
+            $lock = $db->prepare('SELECT id FROM workspaces WHERE id = ? FOR UPDATE');
+            $lock->execute([$workspaceId]);
+            $query = $db->prepare('SELECT board_id, data, version FROM boards WHERE workspace_id = ? ORDER BY board_id FOR UPDATE');
+            $query->execute([$workspaceId]);
+            $records = $query->fetchAll();
+            $versions = [];
+            foreach ($records as $record) {
+                $versions[$record['board_id']] = (int) $record['version'];
+            }
+            if (!pixelboard_backup_versions_match($versions, $input['versions'])) {
+                $db->rollBack();
+                pixelboard_fail(409, 'L’espace a changé ailleurs. Actualisez les tableaux avant de valider ou restaurer.');
+            }
+            if (!$records && $operation === 'approve') {
+                $db->rollBack();
+                pixelboard_fail(422, 'Aucun tableau à protéger.');
+            }
+            if ($records && !pixelboard_valid_backup_records($records)) {
+                throw new RuntimeException('Invalid workspace records');
+            }
+            $write = $db->prepare('INSERT INTO workspace_backups (workspace_id, slot, data, saved_by) VALUES (?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE data = VALUES(data), revision = revision + 1, saved_by = VALUES(saved_by), saved_at = CURRENT_TIMESTAMP');
+            if ($operation === 'approve') {
+                $write->execute([$workspaceId, 'approved', json_encode($records, JSON_THROW_ON_ERROR), $user['id']]);
+            } else {
+                $query = $db->prepare('SELECT data, revision FROM workspace_backups WHERE workspace_id = ? AND slot = ? FOR UPDATE');
+                $query->execute([$workspaceId, $slot]);
+                $backup = $query->fetch();
+                if (!$backup || (int) ($input['revision'] ?? 0) !== (int) $backup['revision']) {
+                    $db->rollBack();
+                    pixelboard_fail(409, 'La copie protégée a changé ou n’existe plus. Rechargez son état.');
+                }
+                $restored = json_decode($backup['data'], true, 512, JSON_THROW_ON_ERROR);
+                if ($restored === []) {
+                    $db->rollBack();
+                    pixelboard_fail(422, 'Cette copie ne contient aucun tableau à récupérer. Aucun tableau actuel n’a été supprimé.');
+                }
+                if (!pixelboard_valid_backup_records($restored)) {
+                    throw new RuntimeException('Invalid workspace backup');
+                }
+                $write->execute([$workspaceId, 'before_restore', json_encode($records, JSON_THROW_ON_ERROR), $user['id']]);
+                $update = $db->prepare('INSERT INTO boards (workspace_id, board_id, data, version) VALUES (?, ?, ?, 1)
+                    ON DUPLICATE KEY UPDATE data = VALUES(data), version = version + 1, updated_at = CURRENT_TIMESTAMP');
+                foreach ($restored as $record) {
+                    $update->execute([$workspaceId, $record['board_id'], $record['data']]);
+                }
+            }
+            $db->commit();
+        } catch (Throwable $error) {
+            if ($db->inTransaction()) $db->rollBack();
+            throw $error;
+        }
+        pixelboard_reply(200, ['saved' => true]);
+    }
+
     if ($action === 'boards' && $method === 'GET') {
         $query = $db->prepare('SELECT board_id, data, version, updated_at FROM boards WHERE workspace_id = ? ORDER BY updated_at, board_id');
         $query->execute([$workspaceId]);
@@ -399,6 +477,8 @@ try {
         }
         $db->beginTransaction();
         try {
+            $lock = $db->prepare('SELECT id FROM workspaces WHERE id = ? FOR UPDATE');
+            $lock->execute([$workspaceId]);
             $query = $db->prepare('SELECT version FROM boards WHERE workspace_id = ? AND board_id = ? FOR UPDATE');
             $query->execute([$workspaceId, $id]);
             $currentVersion = $query->fetchColumn();

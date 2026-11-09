@@ -12,6 +12,16 @@ function check(bool $condition, string $message): void
 }
 
 $owner = ['id' => 1, 'workspace_id' => 7, 'role' => 'owner'];
+check(pixelboard_backup_versions_match(['b' => 2, 'a' => 1], ['a' => 1, 'b' => 2]), 'versions identiques sans dependance a l’ordre');
+check(!pixelboard_backup_versions_match(['a' => 2], ['a' => 1]), 'copie obsolete refusee');
+check(!pixelboard_backup_versions_match(['a' => 1, 'b' => 1], ['a' => 1]), 'nouveau tableau concurrent detecte');
+check(!pixelboard_backup_versions_match(['a' => 1], ['a' => '1']), 'type de version invalide refuse');
+$validBackup = [['board_id' => 'root', 'data' => '{"id":"root","items":[]}']];
+check(pixelboard_valid_backup_records($validBackup), 'copie valide avec tableau vide');
+check(!pixelboard_valid_backup_records([]), 'copie vide refusee');
+check(!pixelboard_valid_backup_records(array_merge($validBackup, $validBackup)), 'doublons de tableaux refuses');
+check(!pixelboard_valid_backup_records([['board_id' => 'root', 'data' => '{"id":"elsewhere","items":[]}']]), 'identifiant de copie incoherent refuse');
+check(!pixelboard_valid_backup_records([['board_id' => 'root', 'data' => 'broken']]), 'copie corrompue refusee');
 foreach ([1045 => 'DATABASE_AUTH_REJECTED', 1044 => 'DATABASE_ACCESS_DENIED', 1049 => 'DATABASE_UNKNOWN',
     2002 => 'DATABASE_UNREACHABLE', 1040 => 'DATABASE_LIMIT', 9999 => 'DATABASE_CONNECT'] as $code => $diagnostic) {
     $error = new PDOException('SECRET_MUST_NOT_BE_EXPOSED');

@@ -6,8 +6,8 @@
     <meta name="theme-color" content="#173a35" />
     <meta name="description" content="Un espace visuel local pour organiser idées, images, tableaux et tâches d’équipe." />
     <title>PixelBoard — Atelier d’idées</title>
-    <script type="module" crossorigin src="/assets/index-CW8wpc6G.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-DJdEVUl-.css">
+    <script type="module" crossorigin src="/assets/index-DV__Is-o.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-2IDflQIl.css">
   </head>
   <body class="auth-locked">
     <main class="login-page" id="login-page" aria-labelledby="login-page-title">
@@ -196,6 +196,16 @@
             </div>
             <p id="account-summary"></p>
             <p class="sync-warning" id="sync-warning" hidden></p>
+            <div id="backup-controls" hidden>
+              <h4>Copie protégée administrateur</h4>
+              <p>Validez tous les tableaux de l’espace pour conserver une référence que les membres ne peuvent pas remplacer.</p>
+              <p id="backup-status" role="status" aria-live="polite"></p>
+              <div class="account-actions">
+                <button class="button button-quiet" id="backup-approve" type="button">Valider cette version</button>
+                <button class="button button-quiet" id="backup-restore" type="button">Restaurer la version validée</button>
+                <button class="button button-quiet" id="backup-undo-restore" type="button">Récupérer le travail avant restauration</button>
+              </div>
+            </div>
             <div class="account-actions">
               <button class="button button-quiet" id="invite-create" type="button" hidden>Créer un code d’invitation</button>
               <button class="button button-quiet" id="import-local" type="button" hidden>Importer les tableaux de cet appareil</button>

@@ -114,6 +114,7 @@ for (const [state, available, session, visible] of [
   ["error", true, null, false],
   ["checking", true, null, false],
   ["ready", true, { role: "owner" }, false],
+  ["ready", false, { role: "member" }, false],
 ]) {
   test(`owner setup visibility: ${state}, available=${available}, signedIn=${!!session}`, () => {
     const nodes = new Map();
@@ -132,6 +133,7 @@ for (const [state, available, session, visible] of [
       pendingRemoteBoardIds: new Set(), inviteCodeValue: "", setupAvailable: available, setupBusy: false,
     });
     assert.equal($("#owner-setup").hidden, !visible);
+    assert.equal($("#backup-controls").hidden, session?.role !== "owner");
     assert.equal($("#owner-setup-form").controls[0].disabled, !visible);
     if (visible) {
       assert.equal($("#login-form").hidden, true);

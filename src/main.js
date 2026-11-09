@@ -62,6 +62,7 @@ let registerMode = false;
 let inviteCodeValue = "";
 let setupAvailable = false;
 let setupBusy = false;
+let backupBusy = false;
 
 const newId = () => crypto.randomUUID();
 
@@ -259,7 +260,7 @@ async function syncRemoteChanges() {
   const active = document.activeElement;
   const editing = active && (canvas.contains(active) || teamPanel.contains(active))
     && (active.isContentEditable || active.matches("input,textarea,select"));
-  if (!remoteSession || remoteSyncInFlight || remoteWritesInFlight || saveTimer || editing
+  if (!remoteSession || backupBusy || remoteSyncInFlight || remoteWritesInFlight || saveTimer || editing
       || panGesture || drawingGesture || connectionGesture || connectorResizeGesture) return;
   remoteSyncInFlight = true;
   try {
@@ -476,6 +477,7 @@ function scheduleSave(additionalRecords = []) {
 
 function saveImmediately() {
   clearTimeout(saveTimer);
+  saveTimer = null;
   if (remoteSession) return persistRecords(allStoredBoards());
   return writeRecords([board, { id: WORKSPACE_ID, members }]);
 }
@@ -868,6 +870,10 @@ function getMember(memberId) {
 }
 
 function renderTodoCard(card, item) {
+  if (Array.isArray(item.entries)) {
+    renderChecklistCard(card, item);
+    return;
+  }
   const content = document.createElement("div");
   content.className = "todo-content";
   const checkbox = document.createElement("button");
@@ -878,7 +884,6 @@ function renderTodoCard(card, item) {
   checkbox.addEventListener("click", () => {
     snapshotState();
     item.status = item.status === "done" ? "todo" : "done";
-    if (Array.isArray(item.entries)) item.entries.forEach((entry) => { entry.done = item.status === "done"; });
     renderBoard();
     scheduleSave();
   });
@@ -887,10 +892,6 @@ function renderTodoCard(card, item) {
   title.value = item.title || "";
   title.maxLength = 120;
   title.setAttribute("aria-label", "Description de la tâche");
-  if (Array.isArray(item.entries)) {
-    title.placeholder = "Titre de la liste (facultatif)";
-    title.setAttribute("aria-label", "Titre de la liste (facultatif)");
-  }
   title.addEventListener("focus", snapshotState, { once: true });
   title.addEventListener("input", () => { item.title = title.value; scheduleSave(); });
   const details = document.createElement("div");
@@ -904,7 +905,6 @@ function renderTodoCard(card, item) {
   status.addEventListener("change", () => {
     snapshotState();
     item.status = status.value;
-    if (Array.isArray(item.entries) && item.status !== "doing") item.entries.forEach((entry) => { entry.done = item.status === "done"; });
     renderBoard();
     scheduleSave();
   });
@@ -926,7 +926,30 @@ function renderTodoCard(card, item) {
   badge.style.setProperty("--member-color", responsible?.color || "#d3ded0");
   details.prepend(badge);
   content.append(checkbox, title, details);
-  if (Array.isArray(item.entries)) {
+  card.append(content);
+}
+
+function prepareChecklist(item) {
+  item.entries.forEach((entry) => {
+    entry.id ||= newId();
+    entry.status ||= entry.done ? "done" : "todo";
+    if (entry.assigneeId === undefined) entry.assigneeId = item.assigneeId || null;
+  });
+}
+
+function renderChecklistCard(card, item) {
+    prepareChecklist(item);
+    card.classList.add("checklist-card");
+    const content = document.createElement("div");
+    content.className = "checklist-content";
+    const title = document.createElement("input");
+    title.className = "checklist-title";
+    title.value = item.title || "";
+    title.placeholder = "Titre (facultatif)";
+    title.maxLength = 120;
+    title.setAttribute("aria-label", "Titre de la liste (facultatif)");
+    title.addEventListener("focus", snapshotState, { once: true });
+    title.addEventListener("input", () => { item.title = title.value; scheduleSave(); });
     const list = document.createElement("div");
     list.className = "checklist-entries";
     item.entries.forEach((entry) => {
@@ -934,17 +957,17 @@ function renderTodoCard(card, item) {
       row.className = "checklist-row";
       const check = document.createElement("input");
       check.type = "checkbox";
-      check.checked = entry.done;
+      check.checked = entry.status === "done";
       check.setAttribute("aria-label", `Terminer ${entry.text || "cette tâche"}`);
       check.addEventListener("change", () => {
         snapshotState();
-        entry.done = check.checked;
+        entry.status = check.checked ? "done" : "todo";
         updateChecklistStatus(item);
         renderBoard();
         scheduleSave();
       });
       const text = document.createElement("input");
-      text.className = `todo-title ${entry.done ? "is-done" : ""}`;
+      text.className = `todo-title ${entry.status === "done" ? "is-done" : ""}`;
       text.value = entry.text;
       text.maxLength = 120;
       text.placeholder = "Une tâche…";
@@ -955,6 +978,35 @@ function renderTodoCard(card, item) {
         check.setAttribute("aria-label", `Terminer ${entry.text || "cette tâche"}`);
         scheduleSave();
       });
+      const tags = document.createElement("div");
+      tags.className = "checklist-tags";
+      const assignee = document.createElement("select");
+      assignee.className = "task-tag task-tag-assignee";
+      assignee.setAttribute("aria-label", `Responsable de ${entry.text || "cette tâche"}`);
+      assignee.add(new Option("＋ Responsable", "", false, !entry.assigneeId));
+      members.forEach((member) => assignee.add(new Option(member.name, member.id, false, member.id === entry.assigneeId)));
+      const responsible = getMember(entry.assigneeId);
+      if (responsible) assignee.style.setProperty("--member-color", responsible.color);
+      assignee.addEventListener("change", () => {
+        snapshotState();
+        entry.assigneeId = assignee.value || null;
+        renderBoard();
+        scheduleSave();
+      });
+      const status = document.createElement("select");
+      status.className = `task-tag task-tag-status status-${entry.status}`;
+      status.setAttribute("aria-label", `État de ${entry.text || "cette tâche"}`);
+      [["todo", "À faire"], ["doing", "En cours"], ["done", "Terminée"]].forEach(([value, label]) => {
+        status.add(new Option(label, value, false, entry.status === value));
+      });
+      status.addEventListener("change", () => {
+        snapshotState();
+        entry.status = status.value;
+        updateChecklistStatus(item);
+        renderBoard();
+        scheduleSave();
+      });
+      tags.append(assignee, status);
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "checklist-remove";
@@ -967,7 +1019,7 @@ function renderTodoCard(card, item) {
         renderBoard();
         scheduleSave();
       });
-      row.append(check, text, remove);
+      row.append(check, text, remove, tags);
       list.append(row);
     });
     const add = document.createElement("button");
@@ -976,21 +1028,20 @@ function renderTodoCard(card, item) {
     add.textContent = "＋ Ajouter une tâche";
     add.addEventListener("click", () => {
       snapshotState();
-      item.entries.push({ text: "", done: false });
+      item.entries.push({ id: newId(), text: "", status: "todo", assigneeId: null });
       updateChecklistStatus(item);
       renderBoard();
       scheduleSave();
       canvas.querySelector(`[data-id="${CSS.escape(item.id)}"] .checklist-row:last-child .todo-title`)?.focus();
     });
-    content.insertBefore(list, details);
-    content.insertBefore(add, details);
-  }
-  card.append(content);
+    content.append(title, list, add);
+    card.append(content);
 }
 
 function updateChecklistStatus(item) {
-  item.status = item.entries.length && item.entries.every((entry) => entry.done)
-    ? "done" : item.entries.some((entry) => entry.done) ? "doing" : "todo";
+  item.entries.forEach((entry) => { entry.done = entry.status === "done"; });
+  item.status = item.entries.length && item.entries.every((entry) => entry.status === "done")
+    ? "done" : item.entries.some((entry) => entry.status === "done" || entry.status === "doing") ? "doing" : "todo";
 }
 
 function renderVectorItems() {
@@ -1812,7 +1863,15 @@ function allStoredBoards() {
 function allTasks() {
   return allStoredBoards().flatMap((record) => (record.items || [])
     .filter((item) => item.type === "todo")
-    .map((item) => ({ ...item, title: item.title || (Array.isArray(item.entries) ? "Liste sans titre" : ""), boardTitle: record.title, boardId: record.id })));
+    .flatMap((item) => {
+      const location = { boardTitle: record.title, boardId: record.id, id: item.id };
+      if (!Array.isArray(item.entries)) return [{ ...item, ...location }];
+      prepareChecklist(item);
+      return item.entries.map((entry) => ({
+        ...location, entryId: entry.id, title: entry.text, status: entry.status,
+        assigneeId: entry.assigneeId, listTitle: item.title,
+      }));
+    }));
 }
 
 function avatarInitials(name) {
@@ -1920,6 +1979,11 @@ async function importLocalBoards() {
         copy.items = (copy.items || []).map((item) => {
           if (item.type === "board" && boardIdMap.has(item.boardId)) item.boardId = boardIdMap.get(item.boardId);
           if (item.type === "todo" && item.assigneeId && !memberIds.has(item.assigneeId)) item.assigneeId = null;
+          if (item.type === "todo" && Array.isArray(item.entries)) {
+            item.entries.forEach((entry) => {
+              if (entry.assigneeId && !memberIds.has(entry.assigneeId)) entry.assigneeId = null;
+            });
+          }
           return item;
         });
         copy = normalizeBoard(copy);
@@ -2001,6 +2065,85 @@ function confirmConflictResolution(mode) {
     "Exportez l’espace avant de continuer si vous souhaitez conserver les deux versions.",
     publish ? "Publier ma copie" : "Recharger le serveur",
   );
+}
+
+async function prepareBackupAction(operation, slot = "approved") {
+  if (remoteSession?.role !== "owner" || backupBusy) return;
+  const status = $("#backup-status");
+  status.textContent = "Vérification des copies serveur…";
+  try {
+    const result = await apiRequest("backup");
+    const backup = result.backups.find((entry) => entry.slot === slot);
+    if (operation === "restore" && !backup) {
+      status.textContent = slot === "approved" ? "Aucune version validée. Cliquez d’abord sur « Valider cette version »."
+        : "Aucune restauration précédente à annuler.";
+      return;
+    }
+    status.textContent = backup ? `Copie enregistrée le ${backup.saved_at} (heure serveur).` : "Aucune version validée pour le moment.";
+    pendingConfirm = () => executeBackupAction(operation, slot, backup?.revision);
+    showDialog(
+      operation === "approve" ? "Valider tous les tableaux ?" : "Restaurer les tableaux ?",
+      operation === "approve"
+        ? "La version de travail enregistrée de tous les tableaux remplacera la copie protégée précédente."
+        : "Les tableaux de cette copie remplaceront leur version de travail. Les tableaux créés après la copie seront conservés.",
+      operation === "approve"
+        ? "Seul l’administrateur peut remplacer cette référence."
+        : "Le travail actuel sera conservé dans une copie serveur avant restauration. Les comptes et membres ne changent pas.",
+      operation === "approve" ? "Valider cette version" : "Restaurer la copie",
+    );
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function executeBackupAction(operation, slot, revision) {
+  if (remoteSession?.role !== "owner" || backupBusy) return;
+  const status = $("#backup-status");
+  if (pendingRemoteBoardIds.size || remoteWritesInFlight || remoteSyncInFlight) {
+    status.textContent = "Synchronisation en cours ou conflit non résolu. Attendez puis réessayez, ou rechargez la copie serveur.";
+    return;
+  }
+  backupBusy = true;
+  $(".app-shell").inert = true;
+  let restored = false;
+  try {
+    status.textContent = "Enregistrement du travail et protection serveur…";
+    await saveImmediately();
+    saveTimer = null;
+    await apiRequest("backup", {
+      method: "POST",
+      body: { operation, slot, revision, versions: Object.fromEntries(remoteVersions) },
+    });
+    if (operation === "restore") {
+      restored = true;
+      const response = await apiRequest("boards");
+      for (const entry of response.boards) {
+        const record = await deserializeBoard(entry.data);
+        remoteVersions.set(entry.id, entry.version);
+        boardRecords.set(entry.id, record);
+        await writeRecords([remoteCacheRecord(record, false)]);
+      }
+      board = normalizeBoard(boardRecords.get(board.id) || boardRecords.values().next().value);
+      history = [];
+      redoHistory = [];
+      updateHistoryButtons();
+      renderBoard();
+    }
+    status.textContent = operation === "approve"
+      ? "Version validée conservée sur le serveur. Les modifications des membres ne la remplaceront pas."
+      : "Copie restaurée. Le travail remplacé reste récupérable avec « Récupérer le travail avant restauration ».";
+    showToast(operation === "approve" ? "Version administrateur protégée." : "Version serveur restaurée.");
+  } catch (error) {
+    if (restored) {
+      remoteVersions.forEach((value, id) => pendingRemoteBoardIds.add(id));
+      status.textContent = `Restauration effectuée sur le serveur, mais rechargement incomplet : ${error.message}. Rechargez la copie serveur avant toute modification.`;
+    } else {
+      status.textContent = `Opération non confirmée : ${error.message}. Aucune réussite ne peut être garantie; vérifiez la copie serveur avant de réessayer.`;
+    }
+  } finally {
+    backupBusy = false;
+    $(".app-shell").inert = !remoteSession;
+  }
 }
 
 function renderTeam() {
@@ -2181,6 +2324,7 @@ function renderAuthControls() {
     ? `Conflit de synchronisation : ouvrez Mon compte puis choisissez « Recharger la copie serveur » pour récupérer la version partagée. Exportez d’abord votre copie si vous souhaitez conserver vos modifications locales.`
     : "";
   $("#invite-create").hidden = remoteSession?.role !== "owner";
+  $("#backup-controls").hidden = remoteSession?.role !== "owner";
   $("#import-local").hidden = $("#import-local").dataset.available !== "true" || Boolean(!remoteSession);
   $("#publish-local-copy").hidden = !remoteSession || !pendingRemoteBoardIds.size;
   $("#reload-shared-copy").hidden = !remoteSession || !pendingRemoteBoardIds.size;
@@ -2393,11 +2537,12 @@ function emptyMessage(titleText, detailText) {
 function updateTaskStatus(task, status) {
   const record = boardRecords.get(task.boardId);
   const targetBoard = task.boardId === board.id ? board : record;
-  const item = targetBoard?.items.find((candidate) => candidate.id === task.id);
+  const card = targetBoard?.items.find((candidate) => candidate.id === task.id);
+  const item = task.entryId ? card?.entries?.find((entry) => entry.id === task.entryId) : card;
   if (!item) return;
   snapshotState();
   item.status = status;
-  if (Array.isArray(item.entries) && status !== "doing") item.entries.forEach((entry) => { entry.done = status === "done"; });
+  if (task.entryId) updateChecklistStatus(card);
   if (targetBoard.id === board.id) renderBoard();
   else {
     boardRecords.set(targetBoard.id, structuredClone(targetBoard));
@@ -2545,6 +2690,9 @@ function initEvents() {
   $("#invite-create").addEventListener("click", createInviteCode);
   $("#publish-local-copy").addEventListener("click", () => confirmConflictResolution("publish"));
   $("#reload-shared-copy").addEventListener("click", () => confirmConflictResolution("reload"));
+  $("#backup-approve").addEventListener("click", () => prepareBackupAction("approve"));
+  $("#backup-restore").addEventListener("click", () => prepareBackupAction("restore"));
+  $("#backup-undo-restore").addEventListener("click", () => prepareBackupAction("restore", "before_restore"));
   $("#invite-copy").addEventListener("click", async () => {
     const input = $("#invite-code");
     try {
