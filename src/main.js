@@ -1791,8 +1791,13 @@ function confirmConflictResolution(mode) {
 function renderTeam() {
   if (!$("#member-list")) return;
   renderAuthControls();
-  $("#add-member-toggle").hidden = Boolean(remoteSession);
-  $("#member-form").hidden = Boolean(remoteSession);
+  const canManageMembers = remoteSession?.role === "owner";
+  $("#member-management").hidden = !canManageMembers;
+  $("#add-member-toggle").hidden = true;
+  $("#member-form").hidden = true;
+  $("#team-storage-notice").textContent = remoteSession
+    ? "Espace partagé : les tâches sont enregistrées sur le serveur. Le propriétaire administre les membres."
+    : "Mode local : les profils et tâches restent sur cet appareil. Connectez-vous pour accéder à votre équipe.";
   $("#local-notice").textContent = remoteSession
     ? `Espace partagé « ${remoteSession.workspace} ». Les tableaux et tâches sont enregistrés sur le serveur et visibles par les membres connectés.`
     : apiReady
@@ -1820,7 +1825,8 @@ function renderTeam() {
     avatars.append(avatar);
   });
   $("#team-count").textContent = String(members.length);
-  renderMembers();
+  if (canManageMembers) renderMembers();
+  else $("#member-list").replaceChildren();
   renderAssigneeOptions();
   renderTasks();
 }
@@ -1838,7 +1844,7 @@ function renderAuthControls() {
   entry.title = entry.getAttribute("aria-label");
   $("#account-setup").open = apiState === "missing" || apiState === "error";
   $("#auth-description").textContent = apiState === "error"
-    ? `Serveur équipe indisponible : ${apiMessage} Vérifiez public_html/api/config.php et la base MySQL, puis rechargez cette page. Vos données restent locales.`
+    ? `Serveur équipe indisponible : ${apiMessage} Vérifiez pixelboard-config.php à côté de public_html et la base MySQL, puis rechargez cette page. Vos données restent locales.`
     : apiState === "missing"
       ? "API PHP absente : publiez aussi le dossier dist/api dans public_html/api sur Hostinger, puis rechargez cette page. Les comptes et le partage ne sont pas actifs; vos données restent locales."
       : apiState === "checking"
@@ -1847,7 +1853,7 @@ function renderAuthControls() {
   $("#login-form").hidden = registerMode;
   $("#register-form").hidden = !registerMode;
   $("#auth-heading").textContent = registerMode ? "Créer un compte membre" : "Accéder à l’espace partagé";
-  $("#auth-mode-toggle").textContent = registerMode ? "J’ai déjà un compte" : "J’ai un code d’invitation";
+  $("#auth-mode-toggle").textContent = registerMode ? "J’ai déjà un compte" : "Créer un compte avec une invitation";
   $("#account-summary").textContent = remoteSession
     ? `${remoteSession.name} · ${remoteSession.email} · ${remoteSession.workspace}`
     : "";
@@ -2105,18 +2111,7 @@ function reportSaveError(error) {
 
 async function addMemberFromForm(event) {
   event.preventDefault();
-  const data = new FormData(event.currentTarget);
-  const name = String(data.get("name") || "").trim();
-  const role = String(data.get("role") || "").trim();
-  const color = String(data.get("color") || "#d7f36a");
-  if (!name || !role) return;
-  snapshotState();
-  members.push({ id: newId(), name, role, color: /^#[0-9a-f]{6}$/i.test(color) ? color : "#d7f36a" });
-  event.currentTarget.reset();
-  event.currentTarget.hidden = true;
-  renderTeam();
-  try { await writeRecords([{ id: WORKSPACE_ID, members }]); }
-  catch (error) { reportSaveError(error); }
+  showToast("Les comptes membres se créent avec un code d’invitation transmis par le propriétaire.");
 }
 
 function addTaskFromForm(event) {

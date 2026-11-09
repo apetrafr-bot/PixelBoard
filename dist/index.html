@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#173a35" />
     <meta name="description" content="Un espace visuel local pour organiser idées, images, tableaux et tâches d’équipe." />
     <title>PixelBoard — Atelier d’idées</title>
-    <script type="module" crossorigin src="/assets/index-f0sKuMc6.js"></script>
+    <script type="module" crossorigin src="/assets/index-CxLBfsgh.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-IyiGJTUh.css">
   </head>
   <body>
@@ -137,7 +137,7 @@
             <p id="auth-description" role="status">Vérification du serveur de comptes…</p>
             <details class="account-setup" id="account-setup">
               <summary>Propriétaire : activer les comptes sur Hostinger</summary>
-              <p>Publiez tout le contenu de dist, y compris api. Dans public_html/api/config.php, renseignez la base MySQL et le secret privé à partir de api/config.example.php. Importez api/schema.sql via phpMyAdmin.</p>
+              <p>Publiez tout le contenu de dist, y compris api. Dans pixelboard-config.php, à côté de public_html, renseignez la base MySQL et le secret privé à partir de api/config.example.php. Importez api/schema.sql via phpMyAdmin seulement pour une base vide.</p>
               <p>Créez ensuite votre compte administrateur avec la requête setup protégée décrite dans le README. Ne saisissez jamais le secret ici. Une inscription avec invitation crée uniquement un membre.</p>
               <a href="https://github.com/pandaroux9999/PixelBoard#préparer-lhébergement-hostinger" target="_blank" rel="noopener noreferrer">Lire le guide Hostinger du dépôt privé</a>
             </details>
@@ -153,7 +153,7 @@
               <label>Mot de passe (12 caractères minimum)<input name="password" type="password" autocomplete="new-password" required minlength="12" /></label>
               <button class="button button-dark" type="submit">Créer mon compte</button>
             </form>
-            <button class="small-action auth-switch" id="auth-mode-toggle" type="button">J’ai un code d’invitation</button>
+            <button class="small-action auth-switch" id="auth-mode-toggle" type="button">Créer un compte avec une invitation</button>
           </div>
           <div class="account-card" id="account-controls" hidden>
             <p id="account-summary"></p>
@@ -168,7 +168,7 @@
             <label class="invite-display" id="invite-display" hidden>Code à transmettre aux membres<input id="invite-code" readonly /><button class="small-action" id="invite-copy" type="button">Copier le code</button></label>
           </div>
         </section>
-        <section class="team-section">
+        <section class="team-section" id="member-management" hidden>
           <div class="section-title-row"><h3>Membres</h3><button class="small-action" id="add-member-toggle" type="button">＋ Ajouter</button></div>
           <form class="inline-form" id="member-form" hidden>
             <label>Nom<input name="name" required maxlength="40" placeholder="Nom du membre" /></label>
@@ -192,7 +192,7 @@
           </form>
           <div class="task-list" id="task-list"></div>
         </section>
-        <footer class="panel-foot">Les profils et tâches restent sur cet appareil.</footer>
+        <footer class="panel-foot" id="team-storage-notice">Mode local : les profils et tâches restent sur cet appareil.</footer>
       </aside>
     </div>
 

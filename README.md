@@ -77,6 +77,8 @@ Les images de carte sont envoyées dans le JSON du tableau; le corps API est lim
 
 Le compte propriétaire est créé via l’étape d’installation; l’inscription ordinaire n’accorde jamais de privilège propriétaire. Les membres ne peuvent modifier que leur nom, tandis que le propriétaire peut modifier les noms, tags et couleurs de l’équipe. Les comptes ont besoin d’un code d’invitation. La vérification d’adresse e-mail et la récupération autonome de mot de passe ne sont pas incluses.
 
+Dans l'interface, **Membres** est réservé au propriétaire connecté (administrateur). Les tâches restent accessibles aux membres. Les profils locaux existants sont conservés mais ne donnent aucun droit administrateur. Pour créer un compte membre, le propriétaire utilise **Mon compte → Créer un code d'invitation**; le membre choisit **Connexion → Créer un compte avec une invitation** et saisit ce code. Le formulaire local « Ajouter un membre » n'est plus proposé : il ne créait pas de compte.
+
 ## Vérifications
 
 ### Diagnostic PHP sans SSH

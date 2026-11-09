@@ -5,6 +5,30 @@ import test from "node:test";
 
 const source = await readFile(new URL("../src/main.js", import.meta.url), "utf8");
 const render = source.slice(source.indexOf("function renderAuthControls()"), source.indexOf("\nfunction renderMembers()"));
+const renderTeam = source.slice(source.indexOf("function renderTeam()"), source.indexOf("\nfunction renderAuthControls()"));
+
+for (const role of [null, "member", "owner"]) {
+  test(`member administration is owner-only for ${role ?? "local"} session, tasks remain available`, () => {
+    const nodes = new Map();
+    const $ = (selector) => {
+      if (!nodes.has(selector)) nodes.set(selector, { replaceChildren() {}, hidden: false });
+      return nodes.get(selector);
+    };
+    let membersRendered = false;
+    let tasksRendered = false;
+    vm.runInNewContext(`${renderTeam}\nrenderTeam();`, {
+      $, remoteSession: role ? { role, workspace: "Équipe" } : null,
+      apiReady: true, members: [], renderAuthControls() {},
+      renderMembers() { membersRendered = true; },
+      renderAssigneeOptions() {}, renderTasks() { tasksRendered = true; },
+    });
+    assert.equal($("#member-management").hidden, role !== "owner");
+    assert.equal(membersRendered, role === "owner");
+    assert.equal(tasksRendered, true);
+    assert.equal($("#member-form").hidden, true);
+    assert.match($("#team-storage-notice").textContent, role ? /serveur/ : /appareil/);
+  });
+}
 
 for (const state of ["checking", "missing", "error", "ready"]) {
   test(`account access stays visible when API is ${state}`, () => {
