@@ -12,6 +12,7 @@ CREATE TABLE users (
   email VARCHAR(254) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   display_name VARCHAR(80) NOT NULL,
+  avatar_data MEDIUMTEXT DEFAULT NULL,
   tag VARCHAR(40) NOT NULL DEFAULT '',
   color CHAR(7) NOT NULL DEFAULT '#d7f36a',
   role ENUM('owner', 'member') NOT NULL DEFAULT 'member',

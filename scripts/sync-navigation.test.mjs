@@ -8,6 +8,16 @@ const start = source.indexOf("async function syncRemoteChanges()");
 const end = source.indexOf("\nfunction ", start);
 const sync = source.slice(start, end);
 
+test("connector curves bend on either side while preserving endpoints", () => {
+  const code = source.slice(source.indexOf("function connectorPath("), source.indexOf("\nfunction anchorAtWorldPoint("));
+  const context = vm.createContext({});
+  vm.runInContext(code, context);
+  const endpoints = { start: { x: 0, y: 0 }, end: { x: 100, y: 0 } };
+  assert.equal(context.connectorPath(endpoints, 0), "M 0 0 Q 50 0 100 0");
+  assert.equal(context.connectorPath(endpoints, 80), "M 0 0 Q 50 80 100 0");
+  assert.equal(context.connectorPath(endpoints, -80), "M 0 0 Q 50 -80 100 0");
+});
+
 test("recenter uses card bounds in both dimensions", () => {
   const fit = source.slice(source.indexOf("function fitBoardContent()"), source.indexOf("\nfunction updateZoom()"));
   let center;

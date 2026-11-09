@@ -146,7 +146,7 @@ async function persistRecords(records) {
       }
       try {
         if (pendingRemoteBoardIds.has(record.id)) {
-          const error = new Error("Un conflit est en attente. Choisissez de publier la copie locale ou de recharger la version serveur.");
+          const error = new Error("Conflit en attente : ouvrez Mon compte → Recharger la copie serveur. Exportez d’abord votre copie pour conserver vos modifications.");
           error.localBackupSaved = true;
           throw error;
         }
@@ -185,6 +185,7 @@ async function loadRemoteWorkspace(auth, localRecords) {
     name: auth.user.display_name,
     email: auth.user.email,
     role: auth.user.role,
+    avatar: auth.user.avatar_data || "",
     workspace: auth.workspace?.name || "Espace partagé",
   };
   const [memberResponse, boardResponse] = await Promise.all([
@@ -514,6 +515,8 @@ function buildCard(item) {
   card.style.left = `${item.x}px`;
   card.style.top = `${item.y}px`;
   card.style.zIndex = String(item.z ?? 1);
+  if (Number.isFinite(item.width)) card.style.width = `${item.width}px`;
+  if (Number.isFinite(item.height)) card.style.height = `${item.height}px`;
   if (item.type === "connector" || item.type === "drawing") return card;
 
   const grip = document.createElement("div");
@@ -562,6 +565,52 @@ function buildCard(item) {
   else if (item.type === "link") renderLinkCard(card, item);
   else if (item.type === "board") renderNestedBoard(card, item);
   else if (item.type === "todo") renderTodoCard(card, item);
+  for (const corner of ["nw", "ne", "sw", "se"]) {
+    const handle = document.createElement("button");
+    handle.type = "button";
+    handle.className = `card-resize card-resize-${corner}`;
+    handle.setAttribute("aria-label", `Redimensionner la carte (${corner}). Flèches pour ajuster.`);
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      snapshotState();
+      const start = { x: event.clientX, y: event.clientY, width: card.offsetWidth, height: card.offsetHeight, left: item.x, top: item.y };
+      handle.setPointerCapture(event.pointerId);
+      const move = (e) => {
+        const dx = (e.clientX - start.x) / board.zoom;
+        const dy = (e.clientY - start.y) / board.zoom;
+        item.width = Math.max(180, start.width + (corner.includes("w") ? -dx : dx));
+        item.height = Math.max(140, start.height + (corner.includes("n") ? -dy : dy));
+        item.x = corner.includes("w") ? start.left + start.width - item.width : start.left;
+        item.y = corner.includes("n") ? start.top + start.height - item.height : start.top;
+        Object.assign(card.style, { width: `${item.width}px`, height: `${item.height}px`, left: `${item.x}px`, top: `${item.y}px` });
+        renderVectorItems();
+      };
+      const end = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+        scheduleSave();
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      snapshotState();
+      item.width = Math.max(180, card.offsetWidth + (event.key === "ArrowRight" ? 10 : event.key === "ArrowLeft" ? -10 : 0));
+      item.height = Math.max(140, card.offsetHeight + (event.key === "ArrowDown" ? 10 : event.key === "ArrowUp" ? -10 : 0));
+      card.style.width = `${item.width}px`;
+      card.style.height = `${item.height}px`;
+      renderVectorItems();
+      scheduleSave();
+    });
+    card.append(handle);
+  }
 
   card.addEventListener("pointerdown", () => focusSelectedCard(card));
   grip.addEventListener("keydown", (event) => moveCardByKeyboard(event, card, item));
@@ -858,6 +907,12 @@ function renderTodoCard(card, item) {
     scheduleSave();
   });
   details.append(status, assignee);
+  const responsible = getMember(item.assigneeId);
+  const badge = document.createElement("span");
+  badge.className = "assignee-badge";
+  badge.textContent = responsible ? `${avatarInitials(responsible.name)} · ${responsible.name}` : "À attribuer";
+  badge.style.setProperty("--member-color", responsible?.color || "#d3ded0");
+  details.prepend(badge);
   content.append(checkbox, title, details);
   card.append(content);
 }
@@ -877,26 +932,22 @@ function renderVectorItems() {
   marker.setAttribute("orient", "auto-start-reverse");
   const arrow = document.createElementNS("http://www.w3.org/2000/svg", "path");
   arrow.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
-  arrow.setAttribute("fill", "#d7f36a");
+  arrow.setAttribute("fill", "context-stroke");
   marker.append(arrow);
   defs.append(marker);
   connectorLayer.append(defs);
   board.items.filter((item) => item.type === "connector" || item.type === "drawing").forEach((item) => {
     if (item.type === "connector") {
       const endpoints = connectorEndpoints(item);
-      const hitArea = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      hitArea.setAttribute("x1", endpoints.start.x);
-      hitArea.setAttribute("y1", endpoints.start.y);
-      hitArea.setAttribute("x2", endpoints.end.x);
-      hitArea.setAttribute("y2", endpoints.end.y);
+      const hitArea = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const d = connectorPath(endpoints, item.curve || 0);
+      hitArea.setAttribute("d", d);
       prepareVectorSelection(hitArea, item, "Connecteur");
       connectorLayer.append(hitArea);
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      line.setAttribute("x1", endpoints.start.x);
-      line.setAttribute("y1", endpoints.start.y);
-      line.setAttribute("x2", endpoints.end.x);
-      line.setAttribute("y2", endpoints.end.y);
-      line.setAttribute("stroke", item.color || "#d7f36a");
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      line.setAttribute("d", d);
+      line.setAttribute("fill", "none");
+      line.setAttribute("stroke", item.color || "#000000");
       line.setAttribute("stroke-width", "3");
       line.setAttribute("stroke-linecap", "square");
       line.setAttribute("marker-end", "url(#pixelboard-arrowhead)");
@@ -977,6 +1028,13 @@ function appendConnectorHandle(item, endpoint, point) {
   connectorLayer.append(handle, mark);
 }
 
+function connectorPath({ start, end }, curve) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy) || 1;
+  return `M ${start.x} ${start.y} Q ${(start.x + end.x) / 2 - dy / length * curve} ${(start.y + end.y) / 2 + dx / length * curve} ${end.x} ${end.y}`;
+}
+
 function anchorAtWorldPoint(itemId, point) {
   const card = itemId && canvas.querySelector(`[data-id="${CSS.escape(itemId)}"]`);
   if (!card) return { x: .5, y: .5 };
@@ -1019,6 +1077,12 @@ function updateVectorDeleteButton() {
   if (!button) return;
   const selected = board.items.find((item) => item.id === selectedVectorId && (item.type === "connector" || item.type === "drawing"));
   button.hidden = !selected;
+  const controls = $("#connector-controls");
+  controls.hidden = !selected || selected.type !== "connector";
+  if (selected?.type === "connector") {
+    $("#connector-curve").value = selected.curve || 0;
+    $("#connector-color").value = selected.color || "#000000";
+  }
   if (selected) {
     const label = selected.type === "connector" ? "Supprimer le connecteur" : "Supprimer le dessin";
     button.textContent = `× ${label}`;
@@ -1203,9 +1267,8 @@ function setTool(tool) {
     if (button.dataset.tool === tool) button.setAttribute("aria-current", "tool");
     else button.removeAttribute("aria-current");
   });
-  $("#canvas-hint").innerHTML = tool === "select"
-    ? '<span class="hint-drag" aria-hidden="true">⠿</span> Déplacez-vous librement · déposez des images ici'
-    : tool === "line"
+  $("#canvas-hint").hidden = tool === "select";
+  $("#canvas-hint").innerHTML = tool === "line"
       ? '<span class="hint-drag" aria-hidden="true">↗</span> Tirez d’une carte vers une autre pour les relier'
       : '<span class="hint-drag" aria-hidden="true">✎</span> Dessinez librement · double-cliquez un tracé pour le supprimer';
 }
@@ -1534,7 +1597,7 @@ function endVector(event) {
       y1: endpoints.start.y,
       x2: endpoints.end.x,
       y2: endpoints.end.y,
-      color: "#d7f36a",
+      color: "#000000",
     });
     renderBoard();
     scheduleSave();
@@ -1548,7 +1611,7 @@ function endVector(event) {
   snapshotState();
   if (gesture.type === "line") {
     const end = gesture.points.at(-1);
-    board.items.push({ id: newId(), type: "connector", x1: gesture.start.x, y1: gesture.start.y, x2: end.x, y2: end.y, color: "#d7f36a" });
+    board.items.push({ id: newId(), type: "connector", x1: gesture.start.x, y1: gesture.start.y, x2: end.x, y2: end.y, color: "#000000" });
   } else board.items.push({ id: newId(), type: "drawing", points: gesture.points, color: "#d7f36a" });
   renderBoard();
   scheduleSave();
@@ -1917,6 +1980,39 @@ async function submitOwnerSetup(event) {
   }
 }
 
+async function saveProfilePhoto(data) {
+  if (!remoteSession) return;
+  const result = await apiRequest("member", {
+    method: "PATCH", query: `&id=${encodeURIComponent(remoteSession.id)}`,
+    body: { avatar_data: data },
+  });
+  remoteSession.avatar = result.member.avatar_data || "";
+  renderAuthControls();
+  showToast("Photo de profil enregistrée.");
+}
+
+async function uploadProfilePhoto(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 5 * 1024 * 1024) {
+      throw new Error("Choisissez une image PNG, JPG ou WEBP de moins de 5 Mo.");
+    }
+    const bitmap = await createImageBitmap(file);
+    const picture = document.createElement("canvas");
+    picture.width = picture.height = 128;
+    const context = picture.getContext("2d");
+    const side = Math.min(bitmap.width, bitmap.height);
+    context.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, 128, 128);
+    bitmap.close();
+    await saveProfilePhoto(picture.toDataURL("image/png"));
+  } catch (error) {
+    showToast(`Photo non enregistrée : ${error.message}`);
+  } finally {
+    event.target.value = "";
+  }
+}
+
 function renderAuthControls() {
   const section = $("#auth-section");
   section.hidden = false;
@@ -1926,6 +2022,13 @@ function renderAuthControls() {
   account.hidden = !remoteSession;
   const entry = $("#profile-button");
   entry.textContent = remoteSession ? "Mon compte" : "Connexion";
+  if (remoteSession?.avatar) {
+    const photo = document.createElement("img");
+    photo.src = remoteSession.avatar;
+    photo.alt = "";
+    photo.className = "account-photo";
+    entry.prepend(photo);
+  }
   entry.setAttribute("aria-label", remoteSession ? "Ouvrir mon compte" : "Connexion et création de compte");
   entry.title = entry.getAttribute("aria-label");
   $("#account-setup").open = apiState === "missing" || apiState === "error";
@@ -1951,7 +2054,7 @@ function renderAuthControls() {
   const syncWarning = $("#sync-warning");
   syncWarning.hidden = !remoteSession || !pendingRemoteBoardIds.size;
   syncWarning.textContent = pendingRemoteBoardIds.size
-    ? `${pendingRemoteBoardIds.size} tableau${pendingRemoteBoardIds.size > 1 ? "x" : ""} en conflit reste${pendingRemoteBoardIds.size > 1 ? "nt" : ""} en copie locale. Exportez l’espace, puis choisissez de publier votre copie ou de recharger le serveur.`
+    ? `Conflit de synchronisation : ouvrez Mon compte puis choisissez « Recharger la copie serveur » pour récupérer la version partagée. Exportez d’abord votre copie si vous souhaitez conserver vos modifications locales.`
     : "";
   $("#invite-create").hidden = remoteSession?.role !== "owner";
   $("#import-local").hidden = $("#import-local").dataset.available !== "true" || Boolean(!remoteSession);
@@ -2283,6 +2386,16 @@ function initEvents() {
     syncRemoteChanges();
   });
   $("#delete-vector-button").addEventListener("click", deleteSelectedVector);
+  for (const [selector, property] of [["#connector-curve", "curve"], ["#connector-color", "color"]]) {
+    $(selector).addEventListener("focus", snapshotState);
+    $(selector).addEventListener("input", (event) => {
+      const selected = board.items.find((item) => item.id === selectedVectorId && item.type === "connector");
+      if (!selected) return;
+      selected[property] = property === "curve" ? Number(event.target.value) : event.target.value;
+      renderVectorItems();
+      scheduleSave();
+    });
+  }
   document.querySelectorAll(".rail-link[data-tool]").forEach((button) => button.addEventListener("click", () => setTool(button.dataset.tool)));
   $("#profile-button").addEventListener("click", () => {
     teamPanel.hidden = false;
@@ -2298,6 +2411,8 @@ function initEvents() {
   $("#login-form").addEventListener("submit", (event) => submitAccountForm(event, "login"));
   $("#register-form").addEventListener("submit", (event) => submitAccountForm(event, "register"));
   $("#owner-setup-form").addEventListener("submit", submitOwnerSetup);
+  $("#profile-photo").addEventListener("change", uploadProfilePhoto);
+  $("#remove-profile-photo").addEventListener("click", () => saveProfilePhoto("").catch((error) => showToast(`Photo non enregistrée : ${error.message}`)));
   $("#auth-mode-toggle").addEventListener("click", () => { registerMode = !registerMode; renderAuthControls(); });
   $("#logout-button").addEventListener("click", signOutAccount);
   $("#invite-create").addEventListener("click", createInviteCode);

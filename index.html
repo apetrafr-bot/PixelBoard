@@ -91,7 +91,7 @@
             </div>
             <div class="toolbar-secondary">
               <div class="toolbar-context">
-                <span class="canvas-hint" id="canvas-hint"><span class="hint-drag" aria-hidden="true">⠿</span> Déplacez-vous librement · déposez des images ici</span>
+                <span class="canvas-hint" id="canvas-hint" hidden></span>
                 <span class="grid-readout"><i></i> ESPACE OUVERT</span>
               </div>
               <div class="view-controls" aria-label="Contrôles du tableau">
@@ -102,6 +102,10 @@
                 <button class="view-button fit-button" id="fit-board" type="button" aria-label="Recentrer sur les cartes" title="Recentrer sur les cartes"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/></svg>Recentrer</button>
               </div>
               <button class="delete-vector-button" id="delete-vector-button" type="button" hidden>× Supprimer</button>
+              <span id="connector-controls" hidden>
+                <label>Courbure <input id="connector-curve" type="range" min="-500" max="500" step="10" value="0" /></label>
+                <label>Couleur <input id="connector-color" type="color" value="#000000" /></label>
+              </span>
             </div>
           </div>
           <div class="canvas-viewport" id="canvas-viewport">
@@ -170,6 +174,8 @@
             <button class="small-action auth-switch" id="auth-mode-toggle" type="button">Créer un compte avec une invitation</button>
           </div>
           <div class="account-card" id="account-controls" hidden>
+            <label>Ma photo de profil<input id="profile-photo" type="file" accept="image/png,image/jpeg,image/webp" /></label>
+            <button id="remove-profile-photo" class="small-action" type="button">Retirer ma photo</button>
             <p id="account-summary"></p>
             <p class="sync-warning" id="sync-warning" hidden></p>
             <div class="account-actions">

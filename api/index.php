@@ -60,7 +60,7 @@ function pixelboard_db(array $config): PDO
 
 function pixelboard_public_user(PDO $db, int $userId): ?array
 {
-    $query = $db->prepare('SELECT id, workspace_id, email, display_name, tag, color, role FROM users WHERE id = ?');
+    $query = $db->prepare('SELECT id, workspace_id, email, display_name, tag, color, role, avatar_data FROM users WHERE id = ?');
     $query->execute([$userId]);
     $user = $query->fetch();
     return $user ?: null;
@@ -300,7 +300,7 @@ try {
     $workspaceId = (int) $user['workspace_id'];
 
     if ($action === 'members' && $method === 'GET') {
-        $query = $db->prepare('SELECT id, workspace_id, email, display_name, tag, color, role FROM users WHERE workspace_id = ? ORDER BY id');
+        $query = $db->prepare('SELECT id, workspace_id, email, display_name, tag, color, role, avatar_data FROM users WHERE workspace_id = ? ORDER BY id');
         $query->execute([$workspaceId]);
         pixelboard_reply(200, ['members' => $query->fetchAll()]);
     }
@@ -318,6 +318,19 @@ try {
             pixelboard_fail(404, 'Membre introuvable dans cet espace.');
         }
         $input = pixelboard_body();
+        if (array_key_exists('avatar_data', $input)) {
+            if ((int) $user['id'] !== (int) $targetId || count($input) !== 1) {
+                pixelboard_fail(403, 'Vous pouvez modifier uniquement votre propre photo.');
+            }
+            $avatar = $input['avatar_data'];
+            if (!is_string($avatar) || strlen($avatar) > 180000
+                || ($avatar !== '' && !preg_match('/^data:image\/png;base64,[A-Za-z0-9+\/]+=*$/D', $avatar))) {
+                pixelboard_fail(422, 'Photo invalide. Choisissez une petite image PNG.');
+            }
+            $db->prepare('UPDATE users SET avatar_data = ? WHERE id = ? AND workspace_id = ?')
+                ->execute([$avatar ?: null, $targetId, $workspaceId]);
+            pixelboard_reply(200, ['member' => pixelboard_public_user($db, (int) $targetId)]);
+        }
         $profileOnly = count(array_diff(array_keys($input), ['display_name'])) === 0;
         if (!pixelboard_user_can_edit_member($user, $target, $profileOnly)) {
             pixelboard_fail(403, 'Vous ne pouvez modifier que votre nom. Le propriétaire gère les tags et couleurs.');

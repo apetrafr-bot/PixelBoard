@@ -126,6 +126,9 @@ textarea:focus-visible, input:focus-visible, select:focus-visible, [data-drag-ha
 .toolbar-primary .avatar:hover { background: #e4ff83; }
 .account-entry { flex: 0 0 auto; min-height: 28px; border: 1px solid #d7f36a; background: #d7f36a; padding: 0 7px; color: #203326; cursor: pointer; font-size: 10px; font-weight: 700; }
 .account-entry:hover { background: #e4ff83; }
+.account-entry { display: inline-flex; align-items: center; gap: 6px; }
+.account-photo { width: 24px; height: 24px; object-fit: cover; border: 1px solid #23443b; }
+.assignee-badge { display: block; padding: 5px 8px; background: var(--member-color); color: #172f25; font-size: 12px; font-weight: 700; }
 .account-setup { color: #344f40; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .account-setup summary { cursor: pointer; font-weight: 700; }
 .account-setup p { margin: 8px 0; }
@@ -186,7 +189,23 @@ textarea:focus-visible, input:focus-visible, select:focus-visible, [data-drag-ha
 .note-content { padding: 12px 13px 13px; }
 .note-title { display: block; width: 100%; margin: 0 0 7px; border: 0; outline: 0; background: transparent; color: #213a2f; font-size: 13px; font-weight: 800; letter-spacing: -.035em; }
 .note-title:focus { border-bottom: 2px solid #526b4d; }
-.note-body { display: block; width: 100%; min-height: 83px; resize: vertical; border: 0; outline: 0; background: transparent; color: #344b3f; font-size: 11px; line-height: 1.6; }
+.note-body { display: block; width: 100%; min-height: 83px; resize: none; border: 0; outline: 0; background: transparent; color: #344b3f; font-size: 11px; line-height: 1.6; }
+.board-card { min-width: 180px; min-height: 140px; }
+.board-card[style*="height"] { display: flex; flex-direction: column; }
+.board-card[style*="height"] .note-content { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.board-card[style*="height"] .note-body { flex: 1; min-height: 30px; }
+.board-card[style*="height"] .image-plate { flex: 1; min-height: 50px; }
+.card-resize { position: absolute; z-index: 8; width: 18px; height: 18px; border: 0; background: transparent; touch-action: none; }
+.card-resize::after { position: absolute; inset: 5px; border: 1px solid #173a35; background: #d7f36a; content: ""; }
+.card-resize-nw { top: -6px; left: -6px; cursor: nwse-resize; }
+.card-resize-ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.card-resize-sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+.card-resize-se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+.card-resize:focus-visible { outline: 2px solid #173a35; }
+#connector-controls { font-size: 11px; }
+#connector-controls label { display: inline-flex; align-items: center; gap: 5px; }
+#connector-curve { width: 100px; }
+.todo-card select { max-width: 100%; min-height: 32px; border: 1px solid #718577; background: #fbfcf4; color: #213a2f; padding: 5px; font-size: 12px; }
 .note-body::placeholder { color: #526854; opacity: 1; }
 .note-color-mark { width: 23px; height: 5px; margin: 9px 0 0; background: #467c4b; }
 .note-color-mark.ochre { background: #a6662d; }

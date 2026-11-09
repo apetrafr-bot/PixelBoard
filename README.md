@@ -83,6 +83,12 @@ Dans l'interface, **Membres** est réservé au propriétaire connecté (administ
 
 ## Vérifications
 
+### Mise à jour photos et édition des cartes
+
+Pour une base existante, importez **une seule fois `api/migration-avatar.sql`** via phpMyAdmin avant de publier cette version (ajout de la colonne `users.avatar_data`, sans suppression de données). Une nouvelle base utilise directement `api/schema.sql`. Chaque utilisateur connecté peut modifier ou retirer sa propre photo dans **Mon compte**; une miniature PNG 128 × 128 est conservée sur le serveur et affichée à côté du bouton. Ne réimportez pas le schéma complet sur une base existante.
+
+Les quatre coins des cartes permettent de modifier largeur et hauteur au pointeur/toucher ou aux flèches. Les connecteurs neufs sont noirs; sélectionnez-en un pour régler sa couleur et sa courbure. Les couleurs explicites des connecteurs existants sont conservées. En cas de conflit, exportez votre copie avant **Mon compte → Recharger la copie serveur** si vous souhaitez conserver les changements locaux.
+
 ### Retrouver les tableaux partagés
 
 Les comptes doivent appartenir au même espace (inscription via l'invitation du propriétaire). Les tableaux créés hors connexion restent locaux : utilisez **Mon compte → Importer les tableaux de cet appareil** pour en ajouter des copies au serveur. La liste de tableaux dans la barre verte permet d'ouvrir directement tout tableau chargé de l'espace. **Actualiser** récupère les changements partagés; la synchronisation automatique intervient toutes les 15 secondes hors saisie/interaction en cours. **Recentrer** ramène la vue sur les cartes sans les déplacer.
