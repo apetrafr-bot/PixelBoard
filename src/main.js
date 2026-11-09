@@ -887,16 +887,19 @@ function renderTodoCard(card, item) {
     renderBoard();
     scheduleSave();
   });
-  const title = document.createElement("input");
+  const title = document.createElement("textarea");
   title.className = `todo-title ${item.status === "done" ? "is-done" : ""}`;
+  title.rows = 2;
+  title.placeholder = "Une tâche…";
   title.value = item.title || "";
   title.maxLength = 120;
   title.setAttribute("aria-label", "Description de la tâche");
   title.addEventListener("focus", snapshotState, { once: true });
   title.addEventListener("input", () => { item.title = title.value; scheduleSave(); });
   const details = document.createElement("div");
-  details.className = "todo-meta";
+  details.className = "todo-meta checklist-tags";
   const status = document.createElement("select");
+  status.className = `task-tag task-tag-status status-${item.status || "todo"}`;
   status.setAttribute("aria-label", "État de la tâche");
   [["todo", "À faire"], ["doing", "En cours"], ["done", "Terminée"]].forEach(([value, text]) => {
     const option = new Option(text, value, false, value === (item.status || "todo"));
@@ -909,22 +912,19 @@ function renderTodoCard(card, item) {
     scheduleSave();
   });
   const assignee = document.createElement("select");
+  assignee.className = "task-tag task-tag-assignee";
   assignee.setAttribute("aria-label", "Membre assigné");
-  assignee.add(new Option("Non assignée", ""));
-  members.forEach((member) => assignee.add(new Option(`${member.name} · ${member.role}`, member.id, false, member.id === item.assigneeId)));
+  assignee.add(new Option("＋ Responsable", "", false, !item.assigneeId));
+  members.forEach((member) => assignee.add(new Option(member.name, member.id, false, member.id === item.assigneeId)));
   assignee.addEventListener("change", () => {
     snapshotState();
     item.assigneeId = assignee.value || null;
     renderBoard();
     scheduleSave();
   });
-  details.append(status, assignee);
   const responsible = getMember(item.assigneeId);
-  const badge = document.createElement("span");
-  badge.className = "assignee-badge";
-  badge.textContent = responsible ? `${avatarInitials(responsible.name)} · ${responsible.name}` : "À attribuer";
-  badge.style.setProperty("--member-color", responsible?.color || "#d3ded0");
-  details.prepend(badge);
+  if (responsible) assignee.style.setProperty("--member-color", responsible.color);
+  details.append(assignee, status);
   content.append(checkbox, title, details);
   card.append(content);
 }
@@ -942,7 +942,8 @@ function renderChecklistCard(card, item) {
     card.classList.add("checklist-card");
     const content = document.createElement("div");
     content.className = "checklist-content";
-    const title = document.createElement("input");
+    const title = document.createElement("textarea");
+    title.rows = 2;
     title.className = "checklist-title";
     title.value = item.title || "";
     title.placeholder = "Titre (facultatif)";
@@ -966,7 +967,8 @@ function renderChecklistCard(card, item) {
         renderBoard();
         scheduleSave();
       });
-      const text = document.createElement("input");
+      const text = document.createElement("textarea");
+      text.rows = 2;
       text.className = `todo-title ${entry.status === "done" ? "is-done" : ""}`;
       text.value = entry.text;
       text.maxLength = 120;

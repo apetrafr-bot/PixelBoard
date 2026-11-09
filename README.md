@@ -99,6 +99,8 @@ Les connecteurs attachés se terminent aux bordures des cartes plutôt que dans 
 
 Le bouton « Liste » crée une carte compacte avec un titre facultatif et plusieurs tâches à cocher, modifiables et supprimables individuellement. Chaque tâche possède deux tags modifiables : son responsable et son état (À faire, En cours, Terminée). « Ajouter une tâche » ajoute une ligne sans responsable. Chaque ligne apparaît aussi dans le panneau Tâches et dans le profil du membre assigné; changer son état ne modifie pas les autres lignes. Les anciennes listes conservent leurs cases et leur attribution initiale, désormais modifiable par ligne. Les listes sont conservées dans les mêmes sauvegardes locales, exports et tableaux partagés que les autres cartes; aucune migration SQL n'est nécessaire.
 
+Les cartes tâches utilisent le même affichage léger que les listes : une case et deux tags modifiables (responsable et état), sans badge redondant. La touche Entrée insère un retour à la ligne dans les tâches, les lignes de liste et leur titre facultatif; ces retours sont conservés dans les sauvegardes. Une icône PixelBoard SVG est incluse pour les onglets du navigateur.
+
 ### Version de travail et copie protégée administrateur
 
 Pour une base existante, importez **une seule fois `api/migration-backups.sql` dans phpMyAdmin**, puis publiez le nouveau `dist` (interface et API). Ne réimportez pas `schema.sql` sur une base existante. Sans cette migration, le site et les comptes restent utilisables; les boutons de protection affichent une erreur explicite. Pour une base neuve, la table est incluse dans `schema.sql`.

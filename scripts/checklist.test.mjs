@@ -77,7 +77,7 @@ test("list UI edits per-row tags, adds unassigned rows and removes independently
   }
   let saved = 0;
   const context = vm.createContext({
-    newId, document: { createElement: () => new Element() },
+    newId, document: { createElement: (tagName) => Object.assign(new Element(), { tagName }) },
     Option: class {}, members: [{ id: "alice", name: "Alice" }, { id: "bob", name: "Bob" }],
     getMember() {}, snapshotState() {}, renderBoard() {},
     scheduleSave() { saved++; },
@@ -89,8 +89,13 @@ test("list UI edits per-row tags, adds unassigned rows and removes independently
   context.renderTodoCard(card, item);
   const [title, list, add] = card.children[0].children;
   assert.equal(title.placeholder, "Titre (facultatif)");
+  assert.equal(title.tagName, "textarea");
+  title.value = "Projet\nÉtape 1";
+  title.events.input();
+  assert.equal(item.title, "Projet\nÉtape 1");
   const [check, text, remove, tags] = list.children[0].children;
-  text.value = "Préparer le dessin";
+  assert.equal(text.tagName, "textarea");
+  text.value = "Préparer le dessin\nPuis le relire";
   text.events.input();
   assert.equal(item.entries[0].text, text.value);
   const [assignee, status] = tags.children;
@@ -111,7 +116,37 @@ test("list UI edits per-row tags, adds unassigned rows and removes independently
   assert.equal(item.entries[2].assigneeId, null);
   remove.events.click();
   assert.equal(item.entries.length, 2);
-  assert.equal(saved, 6);
+  assert.equal(saved, 7);
+});
+
+test("single task uses multiline text and only two compact tags", () => {
+  class Element {
+    children = [];
+    events = {};
+    style = { setProperty() {} };
+    append(...elements) { this.children.push(...elements); }
+    add(element) { this.append(element); }
+    setAttribute() {}
+    addEventListener(name, handler) { this.events[name] = handler; }
+  }
+  const context = vm.createContext({
+    document: { createElement: (tagName) => Object.assign(new Element(), { tagName }) },
+    Option: class {}, members: [], getMember() {}, snapshotState() {}, renderBoard() {}, scheduleSave() {},
+  });
+  load("renderTodoCard", context);
+  const item = { title: "Avant\nAprès", status: "doing" };
+  const card = new Element();
+  context.renderTodoCard(card, item);
+  const [check, text, tags] = card.children[0].children;
+  assert.equal(text.tagName, "textarea");
+  assert.equal(text.value, "Avant\nAprès");
+  assert.equal(tags.children.length, 2);
+  assert.ok(tags.children.every((element) => element.className.includes("task-tag")));
+  text.value = "Une ligne\nUne autre";
+  text.events.input();
+  assert.equal(item.title, text.value);
+  check.events.click();
+  assert.equal(item.status, "done");
 });
 
 test("team status changes affect only the targeted list row, active or background board", async () => {

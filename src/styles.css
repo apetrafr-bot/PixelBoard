@@ -257,17 +257,19 @@ body.auth-locked .app-shell { display: none; }
 .nested-board-open { width: fit-content; border: 0; background: transparent; padding: 2px 0; color: #456358; cursor: pointer; font: 8px var(--mono); text-align: left; }
 .nested-board-open:hover { color: #20392e; text-decoration: underline; }
 .todo-card { width: 292px; background: #eef0d3; }
-.todo-content { display: grid; grid-template-columns: 22px 1fr; gap: 5px 8px; align-items: start; padding: 12px; }
+.todo-content { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 3px 4px; align-items: start; padding: 8px; overflow: auto; }
 .todo-check { width: 18px; height: 18px; border: 1px solid #365747; background: #fbfce9; color: #254b32; cursor: pointer; font-size: 12px; font-weight: 800; }
 .todo-check.is-done { background: #bfe477; }
-.todo-title { width: 100%; border: 0; outline: 0; background: transparent; color: #243d30; font-size: 12px; font-weight: 700; }
+.todo-title { width: 100%; min-width: 0; border: 0; background: transparent; color: #243d30; font: 400 12px/1.5 var(--sans); }
+.todo-title, .checklist-title { display: block; field-sizing: content; min-height: 24px; resize: none; overflow-wrap: anywhere; white-space: pre-wrap; }
+.todo-title:focus-visible { outline: 2px solid #365747; outline-offset: 2px; }
 .todo-title.is-done { color: #5f6a58; text-decoration: line-through; }
 .checklist-content { padding: 6px 8px; overflow: auto; }
 .checklist-title { width: 100%; padding: 3px 0 7px; border: 0; background: transparent; color: #243d30; font: 700 12px var(--sans); }
 .checklist-title::placeholder { color: #52624a; font-weight: 400; }
 .checklist-entries { display: grid; }
-.checklist-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) 24px; align-items: center; gap: 0 4px; padding: 3px 0; border-top: 1px solid #cbd2b6; }
-.checklist-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #365747; cursor: pointer; }
+.checklist-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) 24px; align-items: start; gap: 0 4px; padding: 3px 0; border-top: 1px solid #cbd2b6; }
+.checklist-row input[type="checkbox"] { width: 16px; height: 16px; margin: 5px 0 0; accent-color: #365747; cursor: pointer; }
 .checklist-row .todo-title { min-width: 0; font-weight: 400; padding: 3px 0; }
 .checklist-tags { grid-column: 2 / -1; display: flex; gap: 4px; padding-bottom: 2px; min-width: 0; }
 .task-tag { min-width: 0; max-width: 60%; min-height: 24px; padding: 1px 3px; border: 1px solid #aebc9e; border-radius: 3px; background: #f8f8e9; color: #243d30; font: 11px var(--sans); cursor: pointer; }
@@ -283,8 +285,8 @@ body.auth-locked .app-shell { display: none; }
   .checklist-row input[type="checkbox"] { width: 20px; height: 24px; }
   .task-tag, .checklist-remove, .checklist-add { min-height: 32px; }
 }
-.todo-meta { display: flex; grid-column: 2; gap: 5px; }
-.todo-meta select { min-width: 0; max-width: 50%; border: 1px solid #bbc9ad; background: #f8f8e9; padding: 4px; color: #364d3c; font-size: 9px; }
+.todo-meta { grid-column: 2; padding: 0; }
+.task-copy strong, .profile-task > span:nth-child(2) { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .drop-overlay { position: absolute; z-index: 40; inset: 12px; display: grid; place-items: center; border: 2px dashed #d7f36a; background: #112d29e8; color: #e9f4d0; opacity: 0; pointer-events: none; transition: opacity .12s; }
 .drop-overlay span { border: 1px solid #77936a; padding: 13px 18px; font-size: 15px; font-weight: 700; }
@@ -333,7 +335,8 @@ body.auth-locked .app-shell { display: none; }
 .member-open { width: 20px; height: 24px; border: 0; background: none; color: #54705d; cursor: pointer; font-size: 20px; }
 .inline-form { display: grid; gap: 9px; margin-top: 10px; border: 1px solid #cad6c9; background: #e9eee2; padding: 10px; }
 .inline-form label { display: grid; gap: 4px; color: #456050; font-size: 9px; font-weight: 700; }
-.inline-form input,.inline-form select { min-height: 32px; border: 1px solid #becdc0; border-radius: 0; background: #fffef7; padding: 5px 8px; color: #243b31; font-size: 11px; }
+.inline-form input,.inline-form select,.inline-form textarea { min-width: 0; min-height: 32px; border: 1px solid #becdc0; border-radius: 0; background: #fffef7; padding: 5px 8px; color: #243b31; font-size: 11px; }
+.inline-form textarea { resize: vertical; }
 .inline-form input[type=color] { width: 46px; padding: 3px; }
 .inline-form .button { min-height: 33px; }
 .task-section { flex: 1; }
