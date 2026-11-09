@@ -3,3 +3,4 @@ node_modules/
 api/config.php
 dist/api/config.php
 pixelboard-config.php
+pixelboard-private-logs/

@@ -42,8 +42,12 @@ function pixelboard_db(array $config): PDO
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
     } catch (Throwable $error) {
-        error_log('PixelBoard database connection failed: ' . $error->getMessage());
-        pixelboard_fail(503, 'Le serveur de données est indisponible. Vérifiez la configuration MySQL.');
+        $reference = pixelboard_log_failure(dirname(__DIR__, 2) . '/pixelboard-private-logs', 'DATABASE_CONNECT', $error);
+        pixelboard_reply(503, [
+            'error' => 'Le serveur de données est indisponible. Vérifiez la configuration MySQL.',
+            'diagnostic' => 'DATABASE_CONNECT',
+            'reference' => $reference,
+        ]);
     }
 }
 
@@ -123,6 +127,7 @@ function pixelboard_establish_session(array $user): string
     return pixelboard_new_csrf();
 }
 
+$startupStage = 'configuration';
 try {
     // Keep deployment secrets outside public_html; retain legacy installations.
     $configPath = dirname(__DIR__, 2) . '/pixelboard-config.php';
@@ -139,6 +144,7 @@ try {
         pixelboard_fail(503, 'La configuration serveur est incomplète ou son secret d’installation est trop court.');
     }
 
+    $startupStage = 'session';
     ini_set('session.use_strict_mode', '1');
     ini_set('session.use_only_cookies', '1');
     ini_set('session.use_trans_sid', '0');
@@ -150,9 +156,13 @@ try {
         'httponly' => true,
         'samesite' => 'Lax',
     ]);
-    session_start();
+    if (!session_start()) {
+        throw new RuntimeException('Session initialization failed.');
+    }
 
+    $startupStage = 'database';
     $db = pixelboard_db($config);
+    $startupStage = 'request';
     $action = (string) ($_GET['action'] ?? '');
     $method = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
@@ -393,6 +403,18 @@ try {
 
     pixelboard_fail(404, 'Action API inconnue.');
 } catch (Throwable $error) {
-    error_log('PixelBoard API error: ' . $error->getMessage());
-    pixelboard_fail(500, 'Erreur interne du serveur. Consultez le journal PHP pour plus de détails.');
+    $diagnostic = $startupStage === 'configuration' && $error instanceof ParseError
+        ? 'CONFIG_SYNTAX'
+        : [
+            'configuration' => 'CONFIG_LOAD',
+            'session' => 'SESSION_START',
+            'database' => 'DATABASE_INIT',
+            'request' => 'REQUEST_FAILED',
+        ][$startupStage];
+    $reference = pixelboard_log_failure(dirname(__DIR__, 2) . '/pixelboard-private-logs', $diagnostic, $error);
+    pixelboard_reply(500, [
+        'error' => 'Erreur interne du serveur. Code de diagnostic : ' . $diagnostic . '.',
+        'diagnostic' => $diagnostic,
+        'reference' => $reference,
+    ]);
 }

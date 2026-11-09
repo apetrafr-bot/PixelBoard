@@ -79,6 +79,14 @@ Le compte propriétaire est créé via l’étape d’installation; l’inscript
 
 ## Vérifications
 
+### Diagnostic PHP sans SSH
+
+Après redéploiement, une erreur API renvoie un `diagnostic` et une `reference`, sans secret ni chemin privé. Codes : `CONFIG_SYNTAX` (syntaxe du fichier privé), `CONFIG_LOAD` (chargement/configuration), `SESSION_START` (session PHP), `DATABASE_CONNECT` (connexion MySQL), `DATABASE_INIT` ou `REQUEST_FAILED` (traitement API).
+
+Dans le gestionnaire de fichiers Hostinger, ouvrez **`pixelboard-private-logs/errors.log` dans le dossier parent de `public_html`**. Ce journal contient uniquement date, référence, étape et classe d'exception : aucun message brut, identifiant MySQL ou contenu utilisateur. Faites correspondre la référence à celle de la réponse API. Le dossier est créé avec des permissions privées; il ne doit jamais être publié ni déplacé dans `public_html`. Si PHP ne peut pas écrire ici, un message `PixelBoard private log unavailable` avec la même référence est envoyé au journal PHP de l'hébergeur.
+
+Une erreur de syntaxe du fichier de configuration chargé est interceptée. Une erreur de syntaxe dans le code de l'API lui-même ou un arrêt du moteur PHP avant le gestionnaire exige toujours le journal PHP Hostinger. Ces codes localisent la panne mais ne remplacent pas systématiquement ce journal. Aucun endpoint public de consultation des logs n'est fourni.
+
 ```sh
 npm run build
 npm test

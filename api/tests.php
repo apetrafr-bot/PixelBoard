@@ -12,6 +12,13 @@ function check(bool $condition, string $message): void
 }
 
 $owner = ['id' => 1, 'workspace_id' => 7, 'role' => 'owner'];
+$logDirectory = sys_get_temp_dir() . '/pixelboard-test-' . bin2hex(random_bytes(8));
+$reference = pixelboard_log_failure($logDirectory, 'CONFIG_SYNTAX', new ParseError('SECRET_MUST_NOT_BE_LOGGED'));
+$log = file_get_contents($logDirectory . '/errors.log');
+check(str_contains($log, $reference) && str_contains($log, 'CONFIG_SYNTAX'), 'journal lie a la reference publique');
+check(!str_contains($log, 'SECRET_MUST_NOT_BE_LOGGED'), 'message sensible exclu du journal');
+unlink($logDirectory . '/errors.log');
+rmdir($logDirectory);
 $member = ['id' => 2, 'workspace_id' => 7, 'role' => 'member'];
 $foreignMember = ['id' => 3, 'workspace_id' => 8, 'role' => 'member'];
 

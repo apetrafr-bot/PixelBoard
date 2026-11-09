@@ -1,6 +1,19 @@
 <?php
 declare(strict_types=1);
 
+function pixelboard_log_failure(string $directory, string $diagnostic, Throwable $error): string
+{
+    $reference = bin2hex(random_bytes(8));
+    // Never log exception messages: they can contain credentials or user data.
+    $line = gmdate('c') . ' reference=' . $reference . ' diagnostic=' . $diagnostic
+        . ' exception=' . get_class($error) . PHP_EOL;
+    if ((!is_dir($directory) && !@mkdir($directory, 0700, true))
+        || @file_put_contents($directory . '/errors.log', $line, FILE_APPEND | LOCK_EX) === false) {
+        error_log('PixelBoard private log unavailable; ' . trim($line));
+    }
+    return $reference;
+}
+
 function pixelboard_valid_email(string $email): bool
 {
     return strlen($email) <= 254 && filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
