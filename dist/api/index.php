@@ -35,6 +35,12 @@ function pixelboard_body(): array
 
 function pixelboard_db(array $config): PDO
 {
+    if (!in_array('mysql', PDO::getAvailableDrivers(), true)) {
+        pixelboard_reply(503, [
+            'error' => 'Le pilote PDO MySQL doit être activé dans la configuration PHP de l’hébergement.',
+            'diagnostic' => 'DATABASE_DRIVER_MISSING',
+        ]);
+    }
     try {
         return new PDO($config['db']['dsn'], $config['db']['username'], $config['db']['password'], [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -42,10 +48,11 @@ function pixelboard_db(array $config): PDO
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
     } catch (Throwable $error) {
-        $reference = pixelboard_log_failure(dirname(__DIR__, 2) . '/pixelboard-private-logs', 'DATABASE_CONNECT', $error);
+        $diagnostic = pixelboard_database_diagnostic($error);
+        $reference = pixelboard_log_failure(dirname(__DIR__, 2) . '/pixelboard-private-logs', $diagnostic, $error);
         pixelboard_reply(503, [
             'error' => 'Le serveur de données est indisponible. Vérifiez la configuration MySQL.',
-            'diagnostic' => 'DATABASE_CONNECT',
+            'diagnostic' => $diagnostic,
             'reference' => $reference,
         ]);
     }

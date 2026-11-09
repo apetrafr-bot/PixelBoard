@@ -81,6 +81,8 @@ Le compte propriétaire est créé via l’étape d’installation; l’inscript
 
 ### Diagnostic PHP sans SSH
 
+Les connexions MySQL distinguent aussi `DATABASE_DRIVER_MISSING` (extension PDO MySQL absente), `DATABASE_AUTH_REJECTED` (authentification refusée), `DATABASE_ACCESS_DENIED` (droits sur la base), `DATABASE_UNKNOWN` (base inconnue), `DATABASE_UNREACHABLE` (serveur inaccessible) et `DATABASE_LIMIT` (limite de connexions/ressources). La classification utilise uniquement les codes numériques MySQL, jamais le message brut contenant potentiellement des identifiants. Un code ne prouve pas à lui seul quelle valeur doit être changée : par exemple, une authentification refusée peut aussi dépendre de l'hôte autorisé pour l'utilisateur.
+
 Après redéploiement, une erreur API renvoie un `diagnostic` et une `reference`, sans secret ni chemin privé. Codes : `CONFIG_SYNTAX` (syntaxe du fichier privé), `CONFIG_LOAD` (chargement/configuration), `SESSION_START` (session PHP), `DATABASE_CONNECT` (connexion MySQL), `DATABASE_INIT` ou `REQUEST_FAILED` (traitement API).
 
 Dans le gestionnaire de fichiers Hostinger, ouvrez **`pixelboard-private-logs/errors.log` dans le dossier parent de `public_html`**. Ce journal contient uniquement date, référence, étape et classe d'exception : aucun message brut, identifiant MySQL ou contenu utilisateur. Faites correspondre la référence à celle de la réponse API. Le dossier est créé avec des permissions privées; il ne doit jamais être publié ni déplacé dans `public_html`. Si PHP ne peut pas écrire ici, un message `PixelBoard private log unavailable` avec la même référence est envoyé au journal PHP de l'hébergeur.

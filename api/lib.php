@@ -1,6 +1,19 @@
 <?php
 declare(strict_types=1);
 
+function pixelboard_database_diagnostic(Throwable $error): string
+{
+    $driverCode = $error instanceof PDOException ? (int) ($error->errorInfo[1] ?? 0) : 0;
+    return match ($driverCode) {
+        1045, 1698 => 'DATABASE_AUTH_REJECTED',
+        1044 => 'DATABASE_ACCESS_DENIED',
+        1049 => 'DATABASE_UNKNOWN',
+        2002, 2003, 2005 => 'DATABASE_UNREACHABLE',
+        1040, 1203, 1226 => 'DATABASE_LIMIT',
+        default => 'DATABASE_CONNECT',
+    };
+}
+
 function pixelboard_log_failure(string $directory, string $diagnostic, Throwable $error): string
 {
     $reference = bin2hex(random_bytes(8));

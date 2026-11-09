@@ -12,6 +12,13 @@ function check(bool $condition, string $message): void
 }
 
 $owner = ['id' => 1, 'workspace_id' => 7, 'role' => 'owner'];
+foreach ([1045 => 'DATABASE_AUTH_REJECTED', 1044 => 'DATABASE_ACCESS_DENIED', 1049 => 'DATABASE_UNKNOWN',
+    2002 => 'DATABASE_UNREACHABLE', 1040 => 'DATABASE_LIMIT', 9999 => 'DATABASE_CONNECT'] as $code => $diagnostic) {
+    $error = new PDOException('SECRET_MUST_NOT_BE_EXPOSED');
+    $error->errorInfo = ['HY000', $code, 'PRIVATE_DATABASE_DETAILS'];
+    check(pixelboard_database_diagnostic($error) === $diagnostic, 'classification MySQL sans message sensible');
+}
+check(pixelboard_database_diagnostic(new RuntimeException('private')) === 'DATABASE_CONNECT', 'erreur inconnue non divulguee');
 $logDirectory = sys_get_temp_dir() . '/pixelboard-test-' . bin2hex(random_bytes(8));
 $reference = pixelboard_log_failure($logDirectory, 'CONFIG_SYNTAX', new ParseError('SECRET_MUST_NOT_BE_LOGGED'));
 $log = file_get_contents($logDirectory . '/errors.log');
