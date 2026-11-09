@@ -83,6 +83,12 @@ async function apiRequest(action, options = {}) {
   const payload = await response.json();
   if (payload.csrf) csrfToken = payload.csrf;
   if (!response.ok) {
+    if (response.status === 401 && remoteSession) {
+      remoteSession = null;
+      clearInterval(remoteSyncTimer);
+      apiMessage = "Votre session a expiré. Reconnectez-vous pour continuer.";
+      renderAuthControls();
+    }
     const error = new Error(payload.error || `Erreur serveur (${response.status}).`);
     error.status = response.status;
     throw error;
@@ -1775,7 +1781,7 @@ async function signOutAccount() {
     renderTeam();
     showToast(pendingRemoteBoardIds.size
       ? "Déconnecté. Une copie non synchronisée reste conservée; reconnectez-vous pour l’exporter."
-      : "Déconnecté. L’espace local reste disponible sur cet appareil.");
+      : "Déconnecté. Connectez-vous pour retrouver votre équipe.");
   } catch (error) {
     console.error("Échec de déconnexion.", error);
     showToast(`Déconnexion impossible : ${error.message}`);
@@ -2013,7 +2019,21 @@ async function uploadProfilePhoto(event) {
   }
 }
 
+function renderAccessGate() {
+  const locked = !remoteSession;
+  const shell = $(".app-shell");
+  shell.inert = locked;
+  document.body.classList.toggle("auth-locked", locked);
+  $("#login-page").hidden = !locked;
+  $("#login-loading").hidden = true;
+  $("#auth-retry").hidden = apiState !== "error" && apiState !== "missing";
+  const destination = locked ? $("#login-content") : $("#account-slot");
+  const section = $("#auth-section");
+  if (section.parentElement !== destination) destination.append(section);
+}
+
 function renderAuthControls() {
+  renderAccessGate();
   const section = $("#auth-section");
   section.hidden = false;
   const forms = $("#auth-forms");
@@ -2410,6 +2430,7 @@ function initEvents() {
   $("#task-form").addEventListener("submit", addTaskFromForm);
   $("#login-form").addEventListener("submit", (event) => submitAccountForm(event, "login"));
   $("#register-form").addEventListener("submit", (event) => submitAccountForm(event, "register"));
+  $("#auth-retry").addEventListener("click", () => location.reload());
   $("#owner-setup-form").addEventListener("submit", submitOwnerSetup);
   $("#profile-photo").addEventListener("change", uploadProfilePhoto);
   $("#remove-profile-photo").addEventListener("click", () => saveProfilePhoto("").catch((error) => showToast(`Photo non enregistrée : ${error.message}`)));
@@ -2550,6 +2571,7 @@ function initEvents() {
     adjustZoom(event.deltaY < 0 ? .08 : -.08, event.clientX - rect.left, event.clientY - rect.top);
   }, { passive: false });
   window.addEventListener("keydown", (event) => {
+    if (!remoteSession) return;
     if (event.code === "Space" && !event.target.matches("input,textarea,[contenteditable=true]")) spacePressed = true;
     if ((event.key === "Delete" || event.key === "Backspace") && selectedVectorId && !event.target.matches("input,textarea,[contenteditable=true]")) {
       event.preventDefault();

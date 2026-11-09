@@ -7,13 +7,22 @@
     <meta name="description" content="Un espace visuel local pour organiser idées, images, tableaux et tâches d’équipe." />
     <title>PixelBoard — Atelier d’idées</title>
   </head>
-  <body>
+  <body class="auth-locked">
+    <main class="login-page" id="login-page" aria-labelledby="login-page-title">
+      <div class="login-content">
+        <h1 id="login-page-title">PixelBoard</h1>
+        <p>Connectez-vous pour retrouver les tableaux de votre équipe.</p>
+        <div id="login-content"></div>
+        <p id="login-loading" role="status">Vérification de votre session…</p>
+        <button class="button button-quiet" id="auth-retry" type="button" hidden>Réessayer la connexion au serveur</button>
+      </div>
+    </main>
     <!-- THESIS: An open pixel-art workspace where boards, references, and team tasks can live together.
     OWN-WORLD: Ink-green workbench, luminous chartreuse actions, square cards, coordinate grid, and vivid pixel art.
     STORY: Gather a team, add and assign work, then move freely between nested boards and image references.
     FIRST VIEWPORT: A compact tools rail and team drawer frame an expansive, pannable pixel canvas.
     FORM: A tactile sprite atelier; grid coordinates, hard-edged paper cards, and local-first editing are functional, not decoration. -->
-    <div class="app-shell">
+    <div class="app-shell" inert>
       <aside class="index-rail" aria-label="Outils du tableau">
         <div class="rail-brand-row">
           <a class="brand-mark" href="#" aria-label="PixelBoard">
@@ -135,6 +144,7 @@
           <button class="icon-button" id="team-close" type="button" aria-label="Fermer">×</button>
         </header>
         <p class="local-notice" id="local-notice">Équipe de démonstration enregistrée sur cet appareil. Les invitations et la synchronisation partagée ne sont pas connectées.</p>
+        <div id="account-slot"></div>
         <section class="auth-section" id="auth-section" aria-label="Compte et espace partagé">
           <div class="auth-card" id="auth-forms">
             <h3 id="auth-heading">Accéder à l’espace partagé</h3>

@@ -126,6 +126,15 @@ textarea:focus-visible, input:focus-visible, select:focus-visible, [data-drag-ha
 .toolbar-primary .avatar:hover { background: #e4ff83; }
 .account-entry { flex: 0 0 auto; min-height: 28px; border: 1px solid #d7f36a; background: #d7f36a; padding: 0 7px; color: #203326; cursor: pointer; font-size: 10px; font-weight: 700; }
 .account-entry:hover { background: #e4ff83; }
+.login-page { min-height: 100dvh; overflow-y: auto; background: #173a35; padding: 48px 20px; color: #edf4e9; }
+.login-content { width: 100%; max-width: 440px; margin: 0 auto; }
+.login-content h1 { margin: 0 0 12px; font-size: 32px; }
+.login-content > p { line-height: 1.6; }
+.login-content .auth-section { margin: 24px 0; background: #f2f2dd; padding: 24px; color: #213a2f; }
+.login-content .auth-section input { max-width: 100%; }
+body.auth-locked { overflow-y: auto; }
+body.auth-locked .app-shell { display: none; }
+.login-page[hidden] { display: none; }
 .account-entry { display: inline-flex; align-items: center; gap: 6px; }
 .account-photo { width: 24px; height: 24px; object-fit: cover; border: 1px solid #23443b; }
 .assignee-badge { display: block; padding: 5px 8px; background: var(--member-color); color: #172f25; font-size: 12px; font-weight: 700; }

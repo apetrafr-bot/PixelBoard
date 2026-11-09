@@ -83,6 +83,10 @@ Dans l'interface, **Membres** est réservé au propriétaire connecté (administ
 
 ## Vérifications
 
+### Accès au site
+
+Le site affiche d'abord une page de connexion, sans canvas ni outils accessibles hors session. Après authentification, l'espace partagé s'ouvre; une déconnexion ou une réponse API 401 réaffiche la connexion. Si l'API est absente ou indisponible, le diagnostic et un bouton de nouvelle tentative restent affichés, sans bascule vers un éditeur local. Les anciennes données IndexedDB sont conservées et leur import reste explicite après connexion. L'inscription membre exige toujours une invitation; le formulaire propriétaire reste limité au setup initial protégé. Le masquage de l'éditeur ne remplace pas les autorisations de l'API.
+
 ### Mise à jour photos et édition des cartes
 
 Pour une base existante, importez **une seule fois `api/migration-avatar.sql`** via phpMyAdmin avant de publier cette version (ajout de la colonne `users.avatar_data`, sans suppression de données). Une nouvelle base utilise directement `api/schema.sql`. Chaque utilisateur connecté peut modifier ou retirer sa propre photo dans **Mon compte**; une miniature PNG 128 × 128 est conservée sur le serveur et affichée à côté du bouton. Ne réimportez pas le schéma complet sur une base existante.

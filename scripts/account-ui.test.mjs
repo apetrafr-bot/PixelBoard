@@ -90,6 +90,7 @@ for (const state of ["checking", "missing", "error", "ready"]) {
     };
     vm.runInNewContext(`${render}\nrenderAuthControls();`, {
       $, apiState: state, apiMessage: "Configuration MySQL absente",
+      renderAccessGate() {},
       remoteSession: null, registerMode: false, pendingRemoteBoardIds: new Set(), inviteCodeValue: "",
       setupAvailable: false, setupBusy: false,
     });
@@ -125,6 +126,7 @@ for (const [state, available, session, visible] of [
     };
     vm.runInNewContext(`${render}\nrenderAuthControls();`, {
       $, apiState: state, apiMessage: "", remoteSession: session, registerMode: false,
+      renderAccessGate() {},
       pendingRemoteBoardIds: new Set(), inviteCodeValue: "", setupAvailable: available, setupBusy: false,
     });
     assert.equal($("#owner-setup").hidden, !visible);
@@ -134,5 +136,26 @@ for (const [state, available, session, visible] of [
       assert.equal($("#register-form").hidden, true);
       assert.equal($("#auth-mode-toggle").hidden, true);
     }
+
+  });
+}
+
+    for (const signedIn of [false, true]) {
+      test(`access gate hides and disables workspace when signedIn=${signedIn}`, () => {
+        const nodes = new Map();
+        const $ = (selector) => {
+          if (!nodes.has(selector)) nodes.set(selector, { append(child) { child.parentElement = this; } });
+          return nodes.get(selector);
+        };
+        let locked;
+        const gate = source.slice(source.indexOf("function renderAccessGate()"), source.indexOf("\nfunction renderAuthControls()"));
+        vm.runInNewContext(`${gate}\nrenderAccessGate();`, {
+          $, remoteSession: signedIn ? { id: "1" } : null, apiState: "ready",
+          document: { body: { classList: { toggle(name, value) { locked = value; } } } },
+        });
+        assert.equal(locked, !signedIn);
+        assert.equal($(".app-shell").inert, !signedIn);
+        assert.equal($("#login-page").hidden, signedIn);
+        assert.equal($("#auth-section").parentElement, signedIn ? $("#account-slot") : $("#login-content"));
   });
 }
