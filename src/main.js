@@ -1,0 +1,2425 @@
+import "./styles.css";
+
+const DB_NAME = "pixelboard-local";
+const STORE_NAME = "boards";
+const ROOT_ID = "atelier-personnel";
+const WORKSPACE_ID = "__pixelboard_workspace__";
+const REMOTE_CACHE_PREFIX = "__pixelboard_remote_cache__";
+const ORIGIN = { x: 1500, y: 1000 };
+const INITIAL_SIZE = { width: 4200, height: 3200 };
+const MIN_ZOOM = 0.3;
+const MAX_ZOOM = 2.4;
+const HISTORY_LIMIT = 40;
+const MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const API_URL = "/api/index.php";
+
+const $ = (selector, root = document) => root.querySelector(selector);
+const canvas = $("#board-canvas");
+const boardStage = $("#board-stage");
+const viewport = $("#canvas-viewport");
+const connectorLayer = $("#connector-layer");
+const imageInput = $("#image-input");
+const saveStatus = $("#save-status");
+const infoDialog = $("#info-dialog");
+const dialogTitle = $("#dialog-title");
+const dialogCopy = $("#dialog-copy");
+const dialogNote = $("#dialog-note");
+const toast = $("#toast");
+const teamPanel = $("#team-panel");
+
+let db;
+let board;
+let members = [];
+let boardRecords = new Map();
+let activeTool = "select";
+let selectedVectorId = null;
+let saveTimer;
+let toastTimer;
+let lastZIndex = 5;
+let history = [];
+let redoHistory = [];
+let panGesture = null;
+let drawingGesture = null;
+let connectionGesture = null;
+let cardResizeObserver = null;
+let edgeTimer;
+let taskFilter = "all";
+let selectedMember = null;
+let pendingConfirm = null;
+let spacePressed = false;
+let connectorResizeGesture = null;
+let apiState = "checking";
+let apiMessage = "";
+let apiReady = false;
+let remoteSession = null;
+let csrfToken = "";
+let remoteVersions = new Map();
+let pendingRemoteBoardIds = new Set();
+let remoteSyncTimer;
+let remoteWritesInFlight = 0;
+let registerMode = false;
+let inviteCodeValue = "";
+
+const newId = () => crypto.randomUUID();
+
+async function apiRequest(action, options = {}) {
+  const headers = { Accept: "application/json", ...(options.headers || {}) };
+  if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  if (csrfToken && options.method && options.method !== "GET") headers["X-CSRF-Token"] = csrfToken;
+  const response = await fetch(`${API_URL}?action=${encodeURIComponent(action)}${options.query || ""}`, {
+    method: options.method || "GET",
+    credentials: "same-origin",
+    headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+  if (!response.headers.get("content-type")?.includes("application/json")) {
+    const error = new Error("L’API équipe PHP n’est pas installée à cette adresse.");
+    error.apiMissing = true;
+    throw error;
+  }
+  const payload = await response.json();
+  if (payload.csrf) csrfToken = payload.csrf;
+  if (!response.ok) {
+    const error = new Error(payload.error || `Erreur serveur (${response.status}).`);
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+async function serializeBoard(record) {
+  const data = structuredClone(record);
+  for (const item of data.items || []) {
+    if (item.image instanceof Blob) item.image = await imageDataUrl(item.image);
+    if (item.coverImage instanceof Blob) item.coverImage = await imageDataUrl(item.coverImage);
+  }
+  return data;
+}
+
+async function deserializeBoard(record) {
+  const data = structuredClone(record);
+  for (const item of data.items || []) {
+    if (typeof item.image === "string" && item.image.startsWith("data:image/")) item.image = await (await fetch(item.image)).blob();
+    if (typeof item.coverImage === "string" && item.coverImage.startsWith("data:image/")) item.coverImage = await (await fetch(item.coverImage)).blob();
+  }
+  return normalizeBoard(data);
+}
+
+function remoteMemberRecord(member) {
+  return {
+    id: `user:${member.id}`,
+    name: member.display_name,
+    role: member.tag || "",
+    color: safeHexColor(member.color, "#d7f36a"),
+    email: member.email,
+    accountRole: member.role,
+  };
+}
+
+async function saveRemoteBoard(record) {
+  const data = await serializeBoard(record);
+  const response = await apiRequest("board", {
+    method: "PUT",
+    body: { id: record.id, version: remoteVersions.get(record.id) || 0, data },
+  });
+  remoteVersions.set(record.id, response.version);
+}
+
+async function persistRecords(records) {
+  if (!remoteSession) {
+    await writeRecords(records);
+    return;
+  }
+  remoteWritesInFlight += 1;
+  try {
+    for (const record of records) {
+      if (record.id === WORKSPACE_ID) continue;
+      const cachedRecord = remoteCacheRecord(record, true);
+      try {
+        await writeRecords([cachedRecord]);
+      } catch (error) {
+        error.localBackupSaved = false;
+        throw error;
+      }
+      try {
+        if (pendingRemoteBoardIds.has(record.id)) {
+          const error = new Error("Un conflit est en attente. Choisissez de publier la copie locale ou de recharger la version serveur.");
+          error.localBackupSaved = true;
+          throw error;
+        }
+        await saveRemoteBoard(record);
+        pendingRemoteBoardIds.delete(record.id);
+        await writeRecords([remoteCacheRecord(record, false)]);
+      } catch (error) {
+        pendingRemoteBoardIds.add(record.id);
+        error.localBackupSaved = true;
+        renderAuthControls();
+        throw error;
+      }
+    }
+  } finally {
+    remoteWritesInFlight -= 1;
+  }
+}
+
+function remoteCacheRecord(record, pendingRemoteSync) {
+  const cached = {
+    ...structuredClone(record),
+    id: `${REMOTE_CACHE_PREFIX}${remoteSession.id}:${record.id}`,
+    remoteBoardId: record.id,
+    pendingRemoteSync,
+  };
+  return cached;
+}
+
+function localWorkspaceRecords(records) {
+  return records.filter((record) => record.id !== WORKSPACE_ID && !record.id.startsWith(REMOTE_CACHE_PREFIX));
+}
+
+async function loadRemoteWorkspace(auth, localRecords) {
+  remoteSession = {
+    id: String(auth.user.id),
+    name: auth.user.display_name,
+    email: auth.user.email,
+    role: auth.user.role,
+    workspace: auth.workspace?.name || "Espace partagé",
+  };
+  const [memberResponse, boardResponse] = await Promise.all([
+    apiRequest("members"),
+    apiRequest("boards"),
+  ]);
+  history = [];
+  redoHistory = [];
+  updateHistoryButtons();
+  members = memberResponse.members.map(remoteMemberRecord);
+  const self = members.find((member) => member.id === `user:${remoteSession.id}`);
+  if (self) remoteSession.name = self.name;
+  remoteVersions = new Map();
+  pendingRemoteBoardIds = new Set();
+  const remoteBoards = [];
+  for (const entry of boardResponse.boards) {
+    const record = await deserializeBoard(entry.data);
+    record.remoteUpdatedAt = entry.updated_at;
+    remoteVersions.set(record.id, entry.version);
+    remoteBoards.push(record);
+  }
+  const pendingRecords = localRecords.filter((record) =>
+    record.id.startsWith(`${REMOTE_CACHE_PREFIX}${remoteSession.id}:`) && record.pendingRemoteSync && record.remoteBoardId,
+  );
+  const remoteBoardMap = new Map(remoteBoards.map((record) => [record.id, record]));
+  pendingRecords.forEach((cached) => {
+    const data = { ...cached };
+    delete data.id;
+    delete data.remoteBoardId;
+    delete data.pendingRemoteSync;
+    const record = normalizeBoard({ ...data, id: cached.remoteBoardId });
+    remoteBoardMap.set(record.id, record);
+    pendingRemoteBoardIds.add(record.id);
+  });
+  boardRecords = remoteBoardMap;
+  remoteBoards.splice(0, remoteBoards.length, ...remoteBoardMap.values());
+  if (remoteBoards.length) {
+    board = normalizeBoard(remoteBoards.find((record) => record.id === ROOT_ID) || remoteBoards[0]);
+    boardRecords.set(board.id, structuredClone(board));
+  } else {
+    board = {
+      id: ROOT_ID,
+      title: "Mon premier tableau",
+      parentId: null,
+      zoom: 1,
+      originX: ORIGIN.x,
+      originY: ORIGIN.y,
+      worldWidth: INITIAL_SIZE.width,
+      worldHeight: INITIAL_SIZE.height,
+      viewX: ORIGIN.x,
+      viewY: ORIGIN.y,
+      items: [],
+    };
+    boardRecords.set(board.id, structuredClone(board));
+    await persistRecords([board]);
+  }
+  const localBoards = localWorkspaceRecords(localRecords);
+  const canImport = !pendingRemoteBoardIds.size && localBoards.length > 0;
+  $("#import-local").dataset.available = canImport ? "true" : "false";
+  clearInterval(remoteSyncTimer);
+  remoteSyncTimer = setInterval(syncRemoteChanges, 15000);
+}
+
+async function syncRemoteChanges() {
+  if (!remoteSession || remoteWritesInFlight || saveTimer || canvas.contains(document.activeElement) || teamPanel.contains(document.activeElement)) return;
+  try {
+    const [boardResponse, memberResponse] = await Promise.all([
+      apiRequest("boards"),
+      apiRequest("members"),
+    ]);
+    let activeBoardChanged = false;
+    for (const entry of boardResponse.boards) {
+      if (pendingRemoteBoardIds.has(entry.id) || remoteVersions.get(entry.id) === entry.version) continue;
+      const record = await deserializeBoard(entry.data);
+      record.remoteUpdatedAt = entry.updated_at;
+      remoteVersions.set(record.id, entry.version);
+      boardRecords.set(record.id, structuredClone(record));
+      if (board.id === record.id) {
+        board = normalizeBoard(record);
+        activeBoardChanged = true;
+      }
+    }
+    members = memberResponse.members.map(remoteMemberRecord);
+    const self = members.find((member) => member.id === `user:${remoteSession.id}`);
+    if (self) remoteSession.name = self.name;
+    if (activeBoardChanged) {
+      renderBoard();
+      viewport.scrollLeft = board.viewX;
+      viewport.scrollTop = board.viewY;
+    }
+    renderTeam();
+  } catch (error) {
+    console.error("Échec de synchronisation avec l’espace partagé.", error);
+    setSaveStatus("Sync. interrompue", "has-error");
+  }
+}
+
+function scheduleRemoteMemberSave(member) {
+  if (!remoteSession || !member.id.startsWith("user:")) return;
+  clearTimeout(member.remoteSaveTimer);
+  member.remoteSaveTimer = setTimeout(async () => {
+    try {
+      const isOwner = remoteSession.role === "owner";
+      const body = { display_name: member.name };
+      if (isOwner) {
+        body.tag = member.role;
+        body.color = member.color;
+      }
+      const result = await apiRequest("member", {
+        method: "PATCH",
+        query: `&id=${encodeURIComponent(member.id.slice(5))}`,
+        body,
+      });
+      const updated = remoteMemberRecord(result.member);
+      Object.assign(member, updated);
+      if (member.id === `user:${remoteSession.id}`) remoteSession.name = member.name;
+      $("#account-summary").textContent = `${remoteSession.name} · ${remoteSession.email} · ${remoteSession.workspace}`;
+      setSaveStatus("Enregistré");
+    } catch (error) {
+      console.error("Échec de la mise à jour du profil.", error);
+      setSaveStatus("Non enregistré", "has-error");
+      showToast(error.message);
+    }
+  }, 350);
+}
+
+function openDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(STORE_NAME)) {
+        request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Impossible d’ouvrir le stockage local."));
+  });
+}
+
+function readAllRecords() {
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Impossible de lire l’espace de travail."));
+  });
+}
+
+function writeRecords(records) {
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+    records.forEach((record) => store.put(structuredClone(record)));
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("Impossible d’enregistrer l’espace de travail."));
+    transaction.onabort = () => reject(transaction.error ?? new Error("Enregistrement interrompu."));
+  });
+}
+
+function deleteRecord(id) {
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("Impossible de supprimer la copie locale."));
+    transaction.onabort = () => reject(transaction.error ?? new Error("Suppression interrompue."));
+  });
+}
+
+function defaultMembers() {
+  return [
+    { id: "member-ava", name: "Ava Moreau", role: "Artiste pixel", color: "#f18f70" },
+    { id: "member-eli", name: "Eli Martin", role: "Développeur", color: "#79cbb1" },
+    { id: "member-noe", name: "Noé Laurent", role: "Direction créative", color: "#a9a0f0" },
+  ];
+}
+
+function makeDefaultBoard() {
+  const art = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16" viewBox="0 0 24 16" shape-rendering="crispEdges"><rect width="24" height="16" fill="#a8d7dc"/><path fill="#f4cf63" d="M2 2h3v2H2zm15 1h2v2h-2zM8 1h2v1H8z"/><path fill="#668c99" d="M0 7h4V5h3v2h3v2h4V7h3V5h2v2h3V6h2v5H0z"/><path fill="#76b86b" d="M0 10h5V8h3v2h4V8h3v2h3V9h3v2h3v5H0z"/><path fill="#34794f" d="M0 13h3v1h3v-2h2v4H0zm12 1h4v-2h2v4h-6zM20 12h4v4h-4z"/><path fill="#f3da87" d="M9 10h3v2H9zm-2 2h2v2H7zm5-1h2v2h-2z"/><path fill="#da7959" d="M15 5h5v2h-5zM14 7h7v1h-7z"/><path fill="#efc66c" d="M14 4h7v1h-7z"/><path fill="#3e4b40" d="M15 8h5v3h-5z"/><path fill="#5fbdce" d="M17 8h1v2h-1z"/><path fill="#e9a458" d="M14 11h2v2h-2zM21 10h1v2h-1z"/></svg>`;
+  const sprite = new Blob([art], { type: "image/svg+xml" });
+  return {
+    id: ROOT_ID,
+    title: "Pixel art — références",
+    parentId: null,
+    zoom: 1,
+    originX: ORIGIN.x,
+    originY: ORIGIN.y,
+    worldWidth: INITIAL_SIZE.width,
+    worldHeight: INITIAL_SIZE.height,
+    viewX: ORIGIN.x,
+    viewY: ORIGIN.y,
+    items: [
+      { id: newId(), type: "note", x: 82, y: 82, z: 1, title: "Une palette, pas une règle", body: "Limiter les teintes, garder du contraste. La silhouette doit rester lisible à sa taille réelle.", color: "sage" },
+      { id: newId(), type: "image", x: 422, y: 72, z: 2, title: "Jardin miniature", fileName: "pixel-garden.svg", image: sprite, imageZoom: 1 },
+      { id: newId(), type: "note", x: 808, y: 145, z: 3, title: "Notes de lumière", body: "Les ombres peuvent être une couleur à part entière. Essayer une teinte froide plutôt que du noir.", color: "ochre" },
+    ],
+  };
+}
+
+function normalizeBoard(record) {
+  return {
+    ...record,
+    parentId: record.parentId ?? null,
+    items: Array.isArray(record.items) ? record.items : [],
+    zoom: Number.isFinite(record.zoom) ? record.zoom : 1,
+    originX: Number.isFinite(record.originX) ? record.originX : ORIGIN.x,
+    originY: Number.isFinite(record.originY) ? record.originY : ORIGIN.y,
+    worldWidth: Math.max(record.worldWidth ?? INITIAL_SIZE.width, INITIAL_SIZE.width),
+    worldHeight: Math.max(record.worldHeight ?? INITIAL_SIZE.height, INITIAL_SIZE.height),
+    viewX: Number.isFinite(record.viewX) ? record.viewX : (record.originX ?? ORIGIN.x) * (record.zoom ?? 1),
+    viewY: Number.isFinite(record.viewY) ? record.viewY : (record.originY ?? ORIGIN.y) * (record.zoom ?? 1),
+  };
+}
+
+function snapshotState() {
+  history.push(structuredClone({ boards: allStoredBoards(), members, activeBoardId: board.id }));
+  if (history.length > HISTORY_LIMIT) history.shift();
+  redoHistory = [];
+  updateHistoryButtons();
+}
+
+function restoreHistoryState(state) {
+  boardRecords = new Map(state.boards.map((record) => [record.id, normalizeBoard(record)]));
+  board = normalizeBoard(boardRecords.get(state.activeBoardId) || state.boards[0]);
+  boardRecords.set(board.id, structuredClone(board));
+  members = state.members;
+  renderBoard();
+  viewport.scrollLeft = board.viewX;
+  viewport.scrollTop = board.viewY;
+  persistRecords([...boardRecords.values(), { id: WORKSPACE_ID, members }]).catch(reportSaveError);
+}
+
+function updateHistoryButtons() {
+  $("#undo-button").disabled = history.length === 0;
+  $("#redo-button").disabled = redoHistory.length === 0;
+}
+
+function showToast(message) {
+  toast.textContent = message;
+  toast.classList.add("is-visible");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 3400);
+}
+
+function setSaveStatus(text, className = "") {
+  saveStatus.textContent = text;
+  saveStatus.className = `save-status ${className}`.trim();
+}
+
+function scheduleSave(additionalRecords = []) {
+  setSaveStatus("Enregistrement…", "is-saving");
+  clearTimeout(saveTimer);
+  const boardToSave = structuredClone(board);
+  const membersToSave = structuredClone(members);
+  const records = new Map([[boardToSave.id, boardToSave]]);
+  additionalRecords.forEach((record) => records.set(record.id, structuredClone(record)));
+  saveTimer = setTimeout(async () => {
+    saveTimer = null;
+    try {
+      await persistRecords([...records.values(), { id: WORKSPACE_ID, members: membersToSave }]);
+      records.forEach((record, id) => boardRecords.set(id, record));
+      if (remoteSession && remoteVersions.size) $("#import-local").dataset.available = "false";
+      setSaveStatus("Enregistré");
+    } catch (error) {
+      console.error("Échec de l’enregistrement de l’espace de travail.", error);
+      setSaveStatus("Non enregistré", "has-error");
+      showToast(remoteSession
+        ? error.localBackupSaved
+          ? `Synchronisation refusée : ${error.message}. Une copie locale est conservée.`
+          : `Impossible d’enregistrer la copie locale : ${error.message}. Les changements sont encore en mémoire.`
+        : "Stockage local indisponible ou plein. Exportez vos tableaux avant de fermer cette page.");
+    }
+  }, 300);
+}
+
+function saveImmediately() {
+  clearTimeout(saveTimer);
+  if (remoteSession) return persistRecords(allStoredBoards());
+  return writeRecords([board, { id: WORKSPACE_ID, members }]);
+}
+
+function imageDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error ?? new Error("Impossible de préparer une image pour l’export."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function iconButton(label, title, action, className = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `card-action ${className}`.trim();
+  button.textContent = label;
+  button.title = title;
+  button.setAttribute("aria-label", title);
+  button.dataset.action = action;
+  return button;
+}
+
+function focusSelectedCard(card) {
+  if (selectedVectorId) {
+    selectedVectorId = null;
+    renderVectorItems();
+  }
+  card.style.zIndex = String(++lastZIndex);
+  canvas.querySelectorAll(".board-card.is-selected").forEach((selected) => selected.classList.remove("is-selected"));
+  card.classList.add("is-selected");
+}
+
+function addDeleteControl(actions) {
+  actions.append(iconButton("×", "Supprimer cet élément", "delete", "delete"));
+}
+
+function buildCard(item) {
+  const card = document.createElement("article");
+  card.className = `board-card ${item.type}-card ${item.type === "note" ? `note-${safeColor(item.color)}` : ""}`;
+  card.dataset.id = item.id;
+  card.style.left = `${item.x}px`;
+  card.style.top = `${item.y}px`;
+  card.style.zIndex = String(item.z ?? 1);
+  if (item.type === "connector" || item.type === "drawing") return card;
+
+  const grip = document.createElement("div");
+  grip.className = "card-grip";
+  grip.dataset.dragHandle = "";
+  grip.tabIndex = 0;
+  grip.setAttribute("role", "button");
+  grip.setAttribute("aria-label", `Déplacer ${cardDescription(item)}`);
+  grip.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown ArrowLeft ArrowRight");
+
+  const labels = { note: "Note", image: "Image", link: "Lien", board: "Tableau", todo: "Tâche" };
+  const label = document.createElement("span");
+  label.className = "grip-label";
+  label.innerHTML = `<span class="grip-symbol" aria-hidden="true">⠿</span><span>${labels[item.type] ?? "Carte"}</span>`;
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  if (item.type === "image") {
+    actions.append(iconButton("−", "Réduire le zoom de l’image", "zoom-out"), iconButton("+", "Agrandir le zoom de l’image", "zoom-in"));
+    const color = document.createElement("input");
+    color.type = "color";
+    color.className = "frame-color-picker";
+    color.value = safeHexColor(item.frameColor, "#d3ded0");
+    color.title = "Couleur de la marge de l’image";
+    color.setAttribute("aria-label", "Couleur de la marge de l’image");
+    color.addEventListener("focus", snapshotState, { once: true });
+    color.addEventListener("input", () => {
+      item.frameColor = color.value;
+      const plate = card.querySelector(".image-plate");
+      plate.style.backgroundColor = color.value;
+      plate.style.borderColor = color.value;
+      scheduleSave();
+    });
+    actions.append(color);
+  }
+  if (item.type === "board") {
+    actions.append(iconButton("▧", "Choisir l’image d’aperçu", "choose-cover"));
+    if (item.coverImage instanceof Blob) actions.append(iconButton("−", "Retirer l’image d’aperçu", "remove-cover"));
+    actions.append(iconButton("↗", "Ouvrir ce tableau", "open-board"));
+  }
+  addDeleteControl(actions);
+  grip.append(label, actions);
+  card.append(grip);
+
+  if (item.type === "image") renderImageCard(card, item);
+  else if (item.type === "note") renderNoteCard(card, item);
+  else if (item.type === "link") renderLinkCard(card, item);
+  else if (item.type === "board") renderNestedBoard(card, item);
+  else if (item.type === "todo") renderTodoCard(card, item);
+
+  card.addEventListener("pointerdown", () => focusSelectedCard(card));
+  grip.addEventListener("keydown", (event) => moveCardByKeyboard(event, card, item));
+  return card;
+}
+
+function cardDescription(item) {
+  const descriptions = { image: "l’image", note: "la note", link: "le lien", board: "le tableau", todo: "la tâche" };
+  return `${descriptions[item.type] ?? "la carte"} ${item.title || "sans titre"}`;
+}
+
+function safeColor(value) {
+  return ["sage", "ochre", "rose", "blue"].includes(value) ? value : "sage";
+}
+
+function safeHexColor(value, fallback) {
+  return /^#[0-9a-f]{6}$/i.test(value || "") ? value : fallback;
+}
+
+function createGripContent(item, type, content, field, maxLength = 100) {
+  const input = document.createElement("input");
+  input.value = item[field] || "";
+  input.maxLength = maxLength;
+  input.placeholder = `Titre ${type}`;
+  input.setAttribute("aria-label", `Titre ${type}`);
+  input.addEventListener("focus", snapshotState, { once: true });
+  input.addEventListener("input", () => {
+    item[field] = input.value;
+    scheduleSave();
+  });
+  content.append(input);
+  return input;
+}
+
+function renderImageCard(card, item) {
+  const plate = document.createElement("div");
+  plate.className = "image-plate";
+  plate.tabIndex = 0;
+  plate.setAttribute("role", "group");
+  plate.setAttribute("aria-label", "Image recadrable. Après zoom, faites glisser l’image ou utilisez les flèches du clavier pour la déplacer.");
+  const frameColor = safeHexColor(item.frameColor, "#d3ded0");
+  plate.style.backgroundColor = frameColor;
+  plate.style.borderColor = frameColor;
+  const image = document.createElement("img");
+  image.alt = item.title || "Image de référence";
+  image.src = URL.createObjectURL(item.image);
+  plate.append(image);
+  applyImageTransform(plate, item);
+  plate.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.target !== image || (item.imageZoom ?? 1) <= 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    snapshotState();
+    const rect = plate.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const originX = item.imagePanX ?? 0;
+    const originY = item.imagePanY ?? 0;
+    plate.setPointerCapture(event.pointerId);
+    plate.classList.add("is-panning");
+    const move = (moveEvent) => {
+      const max = imagePanLimit(item.imageZoom);
+      item.imagePanX = Math.max(-max, Math.min(max, originX + (moveEvent.clientX - startX) / rect.width));
+      item.imagePanY = Math.max(-max, Math.min(max, originY + (moveEvent.clientY - startY) / rect.height));
+      applyImageTransform(plate, item);
+    };
+    const stop = () => {
+      plate.classList.remove("is-panning");
+      plate.removeEventListener("pointermove", move);
+      plate.removeEventListener("pointerup", stop);
+      plate.removeEventListener("pointercancel", stop);
+      scheduleSave();
+    };
+    plate.addEventListener("pointermove", move);
+    plate.addEventListener("pointerup", stop, { once: true });
+    plate.addEventListener("pointercancel", stop, { once: true });
+  });
+  plate.addEventListener("keydown", (event) => {
+    const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const direction = directions[event.key];
+    if (!direction || (item.imageZoom ?? 1) <= 1) return;
+    event.preventDefault();
+    snapshotState();
+    const step = event.shiftKey ? .08 : .025;
+    const max = imagePanLimit(item.imageZoom);
+    item.imagePanX = Math.max(-max, Math.min(max, (item.imagePanX ?? 0) + direction[0] * step));
+    item.imagePanY = Math.max(-max, Math.min(max, (item.imagePanY ?? 0) + direction[1] * step));
+    applyImageTransform(plate, item);
+    scheduleSave();
+  });
+  const caption = document.createElement("div");
+  caption.className = "image-caption";
+  const title = createGripContent(item, "l’image", caption, "title");
+  title.addEventListener("input", () => { image.alt = item.title || "Image de référence"; });
+  const filename = document.createElement("small");
+  filename.textContent = item.fileName || "Image";
+  caption.append(filename);
+  card.append(plate, caption);
+  image.addEventListener("error", () => {
+    plate.textContent = "Cette image ne peut pas être affichée.";
+    plate.classList.add("image-error");
+  }, { once: true });
+}
+
+function imagePanLimit(zoom) {
+  return Math.min(.45, Math.max(0, (zoom - 1) / (2 * zoom)));
+}
+
+function applyImageTransform(plate, item) {
+  const image = $("img", plate);
+  const zoom = item.imageZoom ?? 1;
+  plate.classList.toggle("is-pannable", zoom > 1);
+  image?.style.setProperty("--image-zoom", String(zoom));
+  image?.style.setProperty("--image-pan-x", `${(item.imagePanX ?? 0) * 100}%`);
+  image?.style.setProperty("--image-pan-y", `${(item.imagePanY ?? 0) * 100}%`);
+}
+
+function renderNoteCard(card, item) {
+  const content = document.createElement("div");
+  content.className = "note-content";
+  const title = document.createElement("input");
+  title.className = "note-title";
+  title.value = item.title || "";
+  title.placeholder = "Titre de la note";
+  title.setAttribute("aria-label", "Titre de la note");
+  title.maxLength = 100;
+  const body = document.createElement("textarea");
+  body.className = "note-body";
+  body.value = item.body || "";
+  body.placeholder = "Écrivez votre idée…";
+  body.setAttribute("aria-label", "Contenu de la note");
+  body.maxLength = 5000;
+  const mark = document.createElement("div");
+  mark.className = `note-color-mark ${safeColor(item.color)}`;
+  title.addEventListener("focus", snapshotState, { once: true });
+  title.addEventListener("input", () => { item.title = title.value; scheduleSave(); });
+  body.addEventListener("focus", snapshotState, { once: true });
+  body.addEventListener("input", () => { item.body = body.value; scheduleSave(); });
+  content.append(title, body, mark);
+  card.append(content);
+}
+
+function renderLinkCard(card, item) {
+  const content = document.createElement("div");
+  content.className = "link-content";
+  const title = document.createElement("input");
+  title.className = "note-title";
+  title.value = item.title || "";
+  title.placeholder = "Titre du lien";
+  title.setAttribute("aria-label", "Titre du lien");
+  title.addEventListener("focus", snapshotState, { once: true });
+  title.addEventListener("input", () => { item.title = title.value; scheduleSave(); });
+  const url = document.createElement("input");
+  url.className = "link-url";
+  url.type = "url";
+  url.value = item.url || "";
+  url.placeholder = "https://…";
+  url.setAttribute("aria-label", "Adresse web");
+  const anchor = document.createElement("a");
+  anchor.className = "link-open";
+  anchor.target = "_blank";
+  anchor.rel = "noopener noreferrer";
+  anchor.textContent = "Ouvrir le lien ↗";
+  const updateLink = () => {
+    item.url = url.value.trim();
+    try {
+      const parsed = new URL(item.url);
+      anchor.href = ["https:", "http:"].includes(parsed.protocol) ? parsed.href : "#";
+      anchor.setAttribute("aria-disabled", anchor.href === "#" ? "true" : "false");
+    } catch {
+      anchor.href = "#";
+      anchor.setAttribute("aria-disabled", "true");
+    }
+    scheduleSave();
+  };
+  url.addEventListener("focus", snapshotState, { once: true });
+  url.addEventListener("input", updateLink);
+  anchor.addEventListener("click", (event) => {
+    if (anchor.getAttribute("aria-disabled") === "true") event.preventDefault();
+  });
+  updateLink();
+  content.append(title, url, anchor);
+  card.append(content);
+}
+
+function renderNestedBoard(card, item) {
+  const preview = document.createElement("div");
+  preview.className = "nested-board-preview";
+  const art = document.createElement("div");
+  art.className = "nested-board-art";
+  if (item.coverImage instanceof Blob) {
+    const image = document.createElement("img");
+    image.src = URL.createObjectURL(item.coverImage);
+    image.alt = item.coverImageName ? `Aperçu : ${item.coverImageName}` : "Image d’aperçu du tableau";
+    art.append(image);
+  } else {
+    const miniBoard = document.createElement("span");
+    miniBoard.className = "mini-board";
+    miniBoard.setAttribute("aria-hidden", "true");
+    miniBoard.innerHTML = "<i></i><i></i><i></i>";
+    art.append(miniBoard);
+  }
+  const title = document.createElement("input");
+  title.className = "nested-board-title";
+  title.value = item.title || "Tableau sans titre";
+  title.maxLength = 80;
+  title.setAttribute("aria-label", "Nom du tableau imbriqué");
+  title.addEventListener("focus", snapshotState, { once: true });
+  title.addEventListener("input", () => {
+    item.title = title.value;
+    const child = boardRecords.get(item.boardId);
+    if (child) {
+      child.title = title.value;
+      boardRecords.set(child.id, structuredClone(child));
+      scheduleSave([child]);
+    } else scheduleSave();
+  });
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "nested-board-open";
+  open.dataset.action = "open-board";
+  open.textContent = "Ouvrir le tableau ↗";
+  const coverInput = document.createElement("input");
+  coverInput.className = "nested-board-cover-input";
+  coverInput.type = "file";
+  coverInput.accept = [...MIME_TYPES].join(",");
+  coverInput.hidden = true;
+  coverInput.setAttribute("aria-label", "Choisir une image d’aperçu");
+  coverInput.addEventListener("change", () => {
+    const file = coverInput.files?.[0];
+    if (!file) return;
+    if (!MIME_TYPES.has(file.type) || file.size > 15 * 1024 * 1024) {
+      showToast(file.size > 15 * 1024 * 1024 ? "Chaque image doit faire moins de 15 Mo." : "Choisissez une image PNG, JPG, WEBP ou GIF.");
+      coverInput.value = "";
+      return;
+    }
+    snapshotState();
+    item.coverImage = file;
+    item.coverImageName = file.name;
+    renderBoard();
+    scheduleSave();
+  });
+  preview.append(art, title, open);
+  card.append(preview, coverInput);
+}
+
+function getMember(memberId) {
+  return members.find((member) => member.id === memberId);
+}
+
+function renderTodoCard(card, item) {
+  const content = document.createElement("div");
+  content.className = "todo-content";
+  const checkbox = document.createElement("button");
+  checkbox.type = "button";
+  checkbox.className = `todo-check ${item.status === "done" ? "is-done" : ""}`;
+  checkbox.setAttribute("aria-label", item.status === "done" ? "Marquer à faire" : "Marquer terminée");
+  checkbox.textContent = item.status === "done" ? "✓" : "";
+  checkbox.addEventListener("click", () => {
+    snapshotState();
+    item.status = item.status === "done" ? "todo" : "done";
+    renderBoard();
+    scheduleSave();
+  });
+  const title = document.createElement("input");
+  title.className = `todo-title ${item.status === "done" ? "is-done" : ""}`;
+  title.value = item.title || "";
+  title.maxLength = 120;
+  title.setAttribute("aria-label", "Description de la tâche");
+  title.addEventListener("focus", snapshotState, { once: true });
+  title.addEventListener("input", () => { item.title = title.value; scheduleSave(); });
+  const details = document.createElement("div");
+  details.className = "todo-meta";
+  const status = document.createElement("select");
+  status.setAttribute("aria-label", "État de la tâche");
+  [["todo", "À faire"], ["doing", "En cours"], ["done", "Terminée"]].forEach(([value, text]) => {
+    const option = new Option(text, value, false, value === (item.status || "todo"));
+    status.add(option);
+  });
+  status.addEventListener("change", () => {
+    snapshotState();
+    item.status = status.value;
+    renderBoard();
+    scheduleSave();
+  });
+  const assignee = document.createElement("select");
+  assignee.setAttribute("aria-label", "Membre assigné");
+  assignee.add(new Option("Non assignée", ""));
+  members.forEach((member) => assignee.add(new Option(`${member.name} · ${member.role}`, member.id, false, member.id === item.assigneeId)));
+  assignee.addEventListener("change", () => {
+    snapshotState();
+    item.assigneeId = assignee.value || null;
+    renderBoard();
+    scheduleSave();
+  });
+  details.append(status, assignee);
+  content.append(checkbox, title, details);
+  card.append(content);
+}
+
+function renderVectorItems() {
+  connectorLayer.setAttribute("width", board.worldWidth);
+  connectorLayer.setAttribute("height", board.worldHeight);
+  connectorLayer.innerHTML = "";
+  const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+  const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+  marker.id = "pixelboard-arrowhead";
+  marker.setAttribute("viewBox", "0 0 10 10");
+  marker.setAttribute("refX", "9");
+  marker.setAttribute("refY", "5");
+  marker.setAttribute("markerWidth", "7");
+  marker.setAttribute("markerHeight", "7");
+  marker.setAttribute("orient", "auto-start-reverse");
+  const arrow = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  arrow.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+  arrow.setAttribute("fill", "#d7f36a");
+  marker.append(arrow);
+  defs.append(marker);
+  connectorLayer.append(defs);
+  board.items.filter((item) => item.type === "connector" || item.type === "drawing").forEach((item) => {
+    if (item.type === "connector") {
+      const endpoints = connectorEndpoints(item);
+      const hitArea = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      hitArea.setAttribute("x1", endpoints.start.x);
+      hitArea.setAttribute("y1", endpoints.start.y);
+      hitArea.setAttribute("x2", endpoints.end.x);
+      hitArea.setAttribute("y2", endpoints.end.y);
+      prepareVectorSelection(hitArea, item, "Connecteur");
+      connectorLayer.append(hitArea);
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", endpoints.start.x);
+      line.setAttribute("y1", endpoints.start.y);
+      line.setAttribute("x2", endpoints.end.x);
+      line.setAttribute("y2", endpoints.end.y);
+      line.setAttribute("stroke", item.color || "#d7f36a");
+      line.setAttribute("stroke-width", "3");
+      line.setAttribute("stroke-linecap", "square");
+      line.setAttribute("marker-end", "url(#pixelboard-arrowhead)");
+      line.dataset.id = item.id;
+      line.classList.add("canvas-vector");
+      line.classList.toggle("is-selected", item.id === selectedVectorId);
+      connectorLayer.append(line);
+      if (item.id === selectedVectorId && item.fromId && item.toId) {
+        appendConnectorHandle(item, "from", endpoints.start);
+        appendConnectorHandle(item, "to", endpoints.end);
+      }
+    } else {
+      const hitArea = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+      hitArea.setAttribute("points", (item.points || []).map((point) => `${point.x},${point.y}`).join(" "));
+      prepareVectorSelection(hitArea, item, "Dessin");
+      connectorLayer.append(hitArea);
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+      path.setAttribute("points", (item.points || []).map((point) => `${point.x},${point.y}`).join(" "));
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", item.color || "#d7f36a");
+      path.setAttribute("stroke-width", "5");
+      path.setAttribute("stroke-linecap", "square");
+      path.setAttribute("stroke-linejoin", "miter");
+      path.dataset.id = item.id;
+      path.classList.add("canvas-vector");
+      path.classList.toggle("is-selected", item.id === selectedVectorId);
+      connectorLayer.append(path);
+    }
+  });
+  if (connectionGesture) drawTemporaryVector();
+  updateVectorDeleteButton();
+}
+
+function appendConnectorHandle(item, endpoint, point) {
+  const handle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  handle.classList.add("connector-anchor-handle");
+  handle.setAttribute("cx", String(point.x));
+  handle.setAttribute("cy", String(point.y));
+  handle.setAttribute("r", String(22 / board.zoom));
+  handle.setAttribute("tabindex", "0");
+  handle.setAttribute("role", "button");
+  handle.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown ArrowLeft ArrowRight");
+  handle.setAttribute("aria-label", `${endpoint === "from" ? "Début" : "Fin"} du connecteur. Utilisez les flèches pour déplacer l’ancrage sur la carte.`);
+  handle.dataset.connectorId = item.id;
+  handle.dataset.endpoint = endpoint;
+  const mark = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  mark.classList.add("connector-anchor-mark");
+  mark.setAttribute("cx", String(point.x));
+  mark.setAttribute("cy", String(point.y));
+  mark.setAttribute("r", String(8 / board.zoom));
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    snapshotState();
+    selectedVectorId = item.id;
+    connectorResizeGesture = { pointerId: event.pointerId, itemId: item.id, endpoint };
+    viewport.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener("keydown", (event) => {
+    const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const direction = directions[event.key];
+    if (!direction) return;
+    event.preventDefault();
+    const vector = board.items.find((candidate) => candidate.id === item.id);
+    if (!vector) return;
+    snapshotState();
+    const key = endpoint === "from" ? "fromAnchor" : "toAnchor";
+    const anchor = { ...(vector[key] || { x: .5, y: .5 }) };
+    const step = event.shiftKey ? .1 : .02;
+    anchor.x = Math.max(0, Math.min(1, anchor.x + direction[0] * step));
+    anchor.y = Math.max(0, Math.min(1, anchor.y + direction[1] * step));
+    vector[key] = anchor;
+    renderVectorItems();
+    connectorLayer.querySelector(`[data-connector-id="${CSS.escape(item.id)}"][data-endpoint="${endpoint}"]`)?.focus();
+    scheduleSave();
+  });
+  connectorLayer.append(handle, mark);
+}
+
+function anchorAtWorldPoint(itemId, point) {
+  const card = itemId && canvas.querySelector(`[data-id="${CSS.escape(itemId)}"]`);
+  if (!card) return { x: .5, y: .5 };
+  return {
+    x: Math.max(0, Math.min(1, (point.x - card.offsetLeft) / card.offsetWidth)),
+    y: Math.max(0, Math.min(1, (point.y - card.offsetTop) / card.offsetHeight)),
+  };
+}
+
+function prepareVectorSelection(vector, item, label) {
+  vector.dataset.id = item.id;
+  vector.classList.add("vector-hit-area");
+  vector.setAttribute("tabindex", "0");
+  vector.setAttribute("role", "button");
+  vector.setAttribute("aria-label", `${label} — sélectionner, puis supprimer`);
+  vector.classList.toggle("is-selected", item.id === selectedVectorId);
+  vector.addEventListener("pointerdown", (event) => event.stopPropagation());
+  vector.addEventListener("click", () => selectVector(item.id));
+  vector.addEventListener("dblclick", deleteSelectedVector);
+  vector.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      selectVector(item.id);
+    } else if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      selectVector(item.id);
+      deleteSelectedVector();
+    }
+  });
+}
+
+function selectVector(vectorId) {
+  selectedVectorId = vectorId;
+  renderVectorItems();
+  connectorLayer.querySelector(`.vector-hit-area[data-id="${CSS.escape(vectorId)}"]`)?.focus();
+}
+
+function updateVectorDeleteButton() {
+  const button = $("#delete-vector-button");
+  if (!button) return;
+  const selected = board.items.find((item) => item.id === selectedVectorId && (item.type === "connector" || item.type === "drawing"));
+  button.hidden = !selected;
+  if (selected) {
+    const label = selected.type === "connector" ? "Supprimer le connecteur" : "Supprimer le dessin";
+    button.textContent = `× ${label}`;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+}
+
+function deleteSelectedVector() {
+  const selected = board.items.find((item) => item.id === selectedVectorId && (item.type === "connector" || item.type === "drawing"));
+  if (!selected) return;
+  snapshotState();
+  board.items = board.items.filter((item) => item.id !== selected.id);
+  selectedVectorId = null;
+  renderBoard();
+  scheduleSave();
+  showToast(selected.type === "connector" ? "Connecteur supprimé." : "Dessin supprimé.");
+}
+
+function connectorEndpoints(item) {
+  const start = cardAnchor(item.fromId, item.fromAnchor);
+  const end = cardAnchor(item.toId, item.toAnchor);
+  return {
+    start: start || { x: item.x1 ?? 0, y: item.y1 ?? 0 },
+    end: end || { x: item.x2 ?? 0, y: item.y2 ?? 0 },
+  };
+}
+
+function cardAnchor(itemId, anchor = { x: .5, y: .5 }) {
+  const card = itemId && canvas.querySelector(`[data-id="${CSS.escape(itemId)}"]`);
+  if (!card) return null;
+  return {
+    x: card.offsetLeft + card.offsetWidth * (anchor?.x ?? .5),
+    y: card.offsetTop + card.offsetHeight * (anchor?.y ?? .5),
+  };
+}
+
+function anchorAtPointer(card, event) {
+  const rect = card.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+  };
+}
+
+function renderBoard() {
+  if (!board.items.some((item) => item.id === selectedVectorId)) selectedVectorId = null;
+  canvas.querySelectorAll("img").forEach((image) => URL.revokeObjectURL(image.src));
+  cardResizeObserver?.disconnect();
+  canvas.replaceChildren(...board.items.filter((item) => !["connector", "drawing"].includes(item.type)).map(buildCard));
+  if (typeof ResizeObserver !== "undefined") {
+    cardResizeObserver = new ResizeObserver(() => renderVectorItems());
+    canvas.querySelectorAll(".board-card").forEach((card) => cardResizeObserver.observe(card));
+  }
+  renderVectorItems();
+  $("#empty-state").hidden = board.items.length > 0;
+  const count = board.items.length;
+  $("#item-count").textContent = `${count} élément${count > 1 ? "s" : ""}`;
+  updateZoom();
+  renderBreadcrumbs();
+  renderTeam();
+}
+
+function updateZoom() {
+  board.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, board.zoom ?? 1));
+  const transform = `translate(${board.originX * board.zoom}px, ${board.originY * board.zoom}px) scale(${board.zoom})`;
+  canvas.style.transform = transform;
+  connectorLayer.style.transform = transform;
+  boardStage.style.width = `${board.worldWidth * board.zoom}px`;
+  boardStage.style.height = `${board.worldHeight * board.zoom}px`;
+  $("#zoom-level").innerHTML = `${Math.round(board.zoom * 100)}&nbsp;%`;
+  if (selectedVectorId) renderVectorItems();
+}
+
+function updateViewSave() {
+  board.viewX = viewport.scrollLeft;
+  board.viewY = viewport.scrollTop;
+  ensureInfiniteSpace();
+  scheduleSave();
+}
+
+function ensureInfiniteSpace() {
+  const margin = 420;
+  const growth = 1800;
+  let shifted = false;
+  if (viewport.scrollLeft < margin * board.zoom) {
+    board.originX += growth;
+    board.worldWidth += growth;
+    viewport.scrollLeft += growth * board.zoom;
+    shifted = true;
+  } else if (viewport.scrollLeft + viewport.clientWidth > (board.worldWidth - margin) * board.zoom) {
+    board.worldWidth += growth;
+    shifted = true;
+  }
+  if (viewport.scrollTop < margin * board.zoom) {
+    board.originY += growth;
+    board.worldHeight += growth;
+    viewport.scrollTop += growth * board.zoom;
+    shifted = true;
+  } else if (viewport.scrollTop + viewport.clientHeight > (board.worldHeight - margin) * board.zoom) {
+    board.worldHeight += growth;
+    shifted = true;
+  }
+  if (shifted) {
+    updateZoom();
+    board.viewX = viewport.scrollLeft;
+    board.viewY = viewport.scrollTop;
+    saveAfterQuietScroll();
+  }
+}
+
+function saveAfterQuietScroll() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    persistRecords([board, { id: WORKSPACE_ID, members }]).then(() => setSaveStatus("Enregistré")).catch((error) => {
+      console.error("Impossible d’enregistrer la position du tableau.", error);
+      reportSaveError(error);
+    });
+  }, 500);
+}
+
+function focusWorldPoint(x, y) {
+  viewport.scrollLeft = Math.max(0, (board.originX + x) * board.zoom - viewport.clientWidth / 2);
+  viewport.scrollTop = Math.max(0, (board.originY + y) * board.zoom - viewport.clientHeight / 2);
+  board.viewX = viewport.scrollLeft;
+  board.viewY = viewport.scrollTop;
+}
+
+function canvasPoint(event) {
+  const rect = viewport.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left + viewport.scrollLeft) / board.zoom,
+    y: (event.clientY - rect.top + viewport.scrollTop) / board.zoom,
+  };
+}
+
+function worldPoint(event) {
+  const point = canvasPoint(event);
+  return { x: point.x - board.originX, y: point.y - board.originY };
+}
+
+function setTool(tool) {
+  activeTool = tool;
+  document.querySelectorAll(".rail-link[data-tool]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.tool === tool);
+    if (button.dataset.tool === tool) button.setAttribute("aria-current", "tool");
+    else button.removeAttribute("aria-current");
+  });
+  $("#canvas-hint").innerHTML = tool === "select"
+    ? '<span class="hint-drag" aria-hidden="true">⠿</span> Déplacez-vous librement · déposez des images ici'
+    : tool === "line"
+      ? '<span class="hint-drag" aria-hidden="true">↗</span> Tirez d’une carte vers une autre pour les relier'
+      : '<span class="hint-drag" aria-hidden="true">✎</span> Dessinez librement · double-cliquez un tracé pour le supprimer';
+}
+
+function addNote(position = viewportCenter()) {
+  snapshotState();
+  board.items.push({ id: newId(), type: "note", x: position.x, y: position.y, z: ++lastZIndex, title: "", body: "", color: ["sage", "ochre", "rose", "blue"][board.items.length % 4] });
+  renderBoard();
+  scheduleSave();
+  requestAnimationFrame(() => canvas.querySelector(`[data-id="${CSS.escape(board.items.at(-1).id)}"] .note-title`)?.focus());
+}
+
+function addLink(position = viewportCenter()) {
+  snapshotState();
+  board.items.push({ id: newId(), type: "link", x: position.x, y: position.y, z: ++lastZIndex, title: "", url: "" });
+  renderBoard();
+  scheduleSave();
+  requestAnimationFrame(() => canvas.querySelector(`[data-id="${CSS.escape(board.items.at(-1).id)}"] .link-url`)?.focus());
+}
+
+function addTask(position = viewportCenter(), values = {}) {
+  snapshotState();
+  board.items.push({ id: newId(), type: "todo", x: position.x, y: position.y, z: ++lastZIndex, title: values.title || "", status: values.status || "todo", assigneeId: values.assigneeId || null });
+  renderBoard();
+  scheduleSave();
+}
+
+function addNestedBoard(position = viewportCenter(), parentId = board.id) {
+  snapshotState();
+  const childId = newId();
+  const child = normalizeBoard({
+    id: childId,
+    parentId,
+    title: "Nouveau tableau",
+    zoom: 1,
+    originX: ORIGIN.x,
+    originY: ORIGIN.y,
+    worldWidth: INITIAL_SIZE.width,
+    worldHeight: INITIAL_SIZE.height,
+    viewX: ORIGIN.x,
+    viewY: ORIGIN.y,
+    items: [],
+  });
+  boardRecords.set(childId, child);
+  board.items.push({ id: newId(), type: "board", x: position.x, y: position.y, z: ++lastZIndex, title: child.title, boardId: childId });
+  renderBoard();
+  persistRecords([board, child, { id: WORKSPACE_ID, members }])
+    .then(() => setSaveStatus("Enregistré"))
+    .catch(reportSaveError);
+}
+
+function viewportCenter() {
+  const center = worldPoint({ clientX: viewport.getBoundingClientRect().left + viewport.clientWidth / 2, clientY: viewport.getBoundingClientRect().top + viewport.clientHeight / 2 });
+  return { x: Math.max(24, Math.round(center.x)), y: Math.max(24, Math.round(center.y)) };
+}
+
+function renderBreadcrumbs() {
+  const nav = $("#breadcrumbs");
+  nav.replaceChildren();
+  const chain = [];
+  let cursor = board;
+  while (cursor) {
+    chain.unshift(cursor);
+    cursor = cursor.parentId ? boardRecords.get(cursor.parentId) : null;
+  }
+  chain.forEach((entry, index) => {
+    if (index) {
+      const slash = document.createElement("span");
+      slash.className = "crumb-slash";
+      slash.textContent = "/";
+      nav.append(slash);
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = entry.title;
+    if (index === chain.length - 1) {
+      button.setAttribute("aria-current", "page");
+      button.setAttribute("contenteditable", "plaintext-only");
+      button.setAttribute("aria-label", "Nom du tableau, modifiable");
+      button.spellcheck = false;
+      button.addEventListener("focus", snapshotState, { once: true });
+      button.addEventListener("input", () => {
+        board.title = button.textContent.trim().slice(0, 80) || "Tableau sans titre";
+        const parent = board.parentId && boardRecords.get(board.parentId);
+        const parentItem = parent?.items.find((item) => item.type === "board" && item.boardId === board.id);
+        if (parentItem) {
+          parentItem.title = board.title;
+          boardRecords.set(parent.id, structuredClone(parent));
+          scheduleSave([parent]);
+        } else scheduleSave();
+      });
+      button.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          button.blur();
+        }
+      });
+    } else button.addEventListener("click", () => openBoard(entry.id));
+    nav.append(button);
+  });
+}
+
+function openBoard(boardId) {
+  const next = boardRecords.get(boardId);
+  if (!next) return;
+  board = normalizeBoard(next);
+  renderBoard();
+  viewport.scrollLeft = board.viewX;
+  viewport.scrollTop = board.viewY;
+}
+
+function moveCardByKeyboard(event, card, item) {
+  const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  const direction = directions[event.key];
+  if (!direction) return;
+  event.preventDefault();
+  snapshotState();
+  const step = event.shiftKey ? 40 : 10;
+  item.x += direction[0] * step;
+  item.y += direction[1] * step;
+  card.style.left = `${item.x}px`;
+  card.style.top = `${item.y}px`;
+  updateCardConnectors();
+  scheduleSave();
+}
+
+function updateCardConnectors() {
+  if (board.items.some((item) => item.type === "connector" && (item.fromId || item.toId))) renderVectorItems();
+}
+
+function adjustZoom(delta, anchorX = viewport.clientWidth / 2, anchorY = viewport.clientHeight / 2) {
+  const pointX = (viewport.scrollLeft + anchorX) / board.zoom;
+  const pointY = (viewport.scrollTop + anchorY) / board.zoom;
+  board.zoom = Math.round(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, board.zoom + delta)) * 100) / 100;
+  updateZoom();
+  viewport.scrollLeft = pointX * board.zoom - anchorX;
+  viewport.scrollTop = pointY * board.zoom - anchorY;
+  updateViewSave();
+}
+
+async function addImageFiles(files, clientX, clientY) {
+  const images = Array.from(files);
+  if (!images.length) return;
+  const invalid = images.find((file) => !MIME_TYPES.has(file.type) || file.size > 15 * 1024 * 1024);
+  if (invalid) {
+    showToast(invalid.size > 15 * 1024 * 1024 ? "Chaque image doit faire moins de 15 Mo." : "Choisissez une image PNG, JPG, WEBP ou GIF.");
+    return;
+  }
+  const point = Number.isFinite(clientX) ? worldPoint({ clientX, clientY }) : viewportCenter();
+  snapshotState();
+  images.forEach((file, index) => {
+    board.items.push({
+      id: newId(), type: "image",
+      x: Math.max(0, point.x + index * 36), y: Math.max(0, point.y + index * 36),
+      z: ++lastZIndex, title: file.name.replace(/\.[^.]+$/, ""), fileName: file.name, image: file, imageZoom: 1,
+    });
+  });
+  renderBoard();
+  scheduleSave();
+  showToast(`${images.length} image${images.length > 1 ? "s ajoutées" : " ajoutée"} au tableau.`);
+}
+
+function startCardDrag(event, grip) {
+  if (event.button !== 0 || event.target.closest("button, input, select")) return false;
+  const card = grip.closest(".board-card");
+  const item = board.items.find((candidate) => candidate.id === card.dataset.id);
+  if (!item) return false;
+  snapshotState();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const originX = item.x;
+  const originY = item.y;
+  grip.setPointerCapture(event.pointerId);
+  event.preventDefault();
+  const move = (moveEvent) => {
+    item.x = originX + (moveEvent.clientX - startX) / board.zoom;
+    item.y = originY + (moveEvent.clientY - startY) / board.zoom;
+    card.style.left = `${item.x}px`;
+    card.style.top = `${item.y}px`;
+    ensureItemBounds(item);
+    updateCardConnectors();
+  };
+  const stop = () => {
+    grip.removeEventListener("pointermove", move);
+    grip.removeEventListener("pointerup", stop);
+    grip.removeEventListener("pointercancel", stop);
+    scheduleSave();
+  };
+  grip.addEventListener("pointermove", move);
+  grip.addEventListener("pointerup", stop, { once: true });
+  grip.addEventListener("pointercancel", stop, { once: true });
+  return true;
+}
+
+function ensureItemBounds(item) {
+  if (item.x + board.originX > board.worldWidth - 600) board.worldWidth += 1800;
+  if (item.y + board.originY > board.worldHeight - 500) board.worldHeight += 1800;
+  updateZoom();
+}
+
+function beginPan(event) {
+  if (event.button !== 0 || event.target.closest(".board-card, button, a, input, textarea, select") || (activeTool !== "select" && !spacePressed)) return false;
+  panGesture = { x: event.clientX, y: event.clientY, scrollX: viewport.scrollLeft, scrollY: viewport.scrollTop };
+  viewport.setPointerCapture(event.pointerId);
+  viewport.classList.add("is-panning");
+  event.preventDefault();
+  return true;
+}
+
+function panMove(event) {
+  if (!panGesture) return;
+  viewport.scrollLeft = panGesture.scrollX - (event.clientX - panGesture.x);
+  viewport.scrollTop = panGesture.scrollY - (event.clientY - panGesture.y);
+  ensureInfiniteSpace();
+}
+
+function beginVector(event) {
+  if (event.button !== 0 || activeTool === "select") return;
+  if (activeTool === "line") {
+    const source = event.target.closest(".board-card");
+    if (!source || event.target.closest("input, textarea, select, a")) return;
+    const item = board.items.find((candidate) => candidate.id === source.dataset.id);
+    if (!item) return;
+    connectionGesture = {
+      pointerId: event.pointerId,
+      fromId: item.id,
+      fromAnchor: anchorAtPointer(source, event),
+      end: worldPoint(event),
+    };
+    viewport.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    drawTemporaryVector();
+    return;
+  }
+  if (event.target.closest(".board-card")) return;
+  const point = worldPoint(event);
+  drawingGesture = { pointerId: event.pointerId, type: activeTool, points: [point], start: point };
+  viewport.setPointerCapture(event.pointerId);
+  event.preventDefault();
+  drawTemporaryVector();
+}
+
+function drawTemporaryVector() {
+  connectorLayer.querySelector(".temporary-vector")?.remove();
+  if (connectionGesture) {
+    const start = cardAnchor(connectionGesture.fromId, connectionGesture.fromAnchor);
+    if (!start) return;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.classList.add("temporary-vector");
+    line.setAttribute("x1", start.x);
+    line.setAttribute("y1", start.y);
+    line.setAttribute("x2", connectionGesture.end.x);
+    line.setAttribute("y2", connectionGesture.end.y);
+    line.setAttribute("stroke", "#d7f36a");
+    line.setAttribute("stroke-width", "3");
+    line.setAttribute("marker-end", "url(#pixelboard-arrowhead)");
+    connectorLayer.append(line);
+    return;
+  }
+  if (!drawingGesture) return;
+  const shape = document.createElementNS("http://www.w3.org/2000/svg", drawingGesture.type === "line" ? "line" : "polyline");
+  shape.classList.add("temporary-vector");
+  shape.setAttribute("stroke", "#d7f36a");
+  shape.setAttribute("stroke-width", "5");
+  shape.setAttribute("stroke-linecap", "square");
+  shape.setAttribute("fill", "none");
+  if (drawingGesture.type === "line") {
+    shape.setAttribute("x1", drawingGesture.start.x);
+    shape.setAttribute("y1", drawingGesture.start.y);
+    const end = drawingGesture.points.at(-1);
+    shape.setAttribute("x2", end.x);
+    shape.setAttribute("y2", end.y);
+  } else shape.setAttribute("points", drawingGesture.points.map((point) => `${point.x},${point.y}`).join(" "));
+  connectorLayer.append(shape);
+}
+
+function moveVector(event) {
+  if (connectorResizeGesture) {
+    const item = board.items.find((candidate) => candidate.id === connectorResizeGesture.itemId);
+    if (!item) return;
+    const anchorKey = connectorResizeGesture.endpoint === "from" ? "fromAnchor" : "toAnchor";
+    item[anchorKey] = anchorAtWorldPoint(
+      connectorResizeGesture.endpoint === "from" ? item.fromId : item.toId,
+      worldPoint(event),
+    );
+    renderVectorItems();
+    return;
+  }
+  if (connectionGesture) {
+    connectionGesture.end = worldPoint(event);
+    drawTemporaryVector();
+    return;
+  }
+  if (!drawingGesture) return;
+  const point = worldPoint(event);
+  if (drawingGesture.type === "line") drawingGesture.points[1] = point;
+  else drawingGesture.points.push(point);
+  drawTemporaryVector();
+}
+
+function endVector(event) {
+  if (connectionGesture) {
+    const gesture = connectionGesture;
+    connectionGesture = null;
+    connectorLayer.querySelector(".temporary-vector")?.remove();
+    if (!event) return;
+    const target = event ? document.elementFromPoint(event.clientX, event.clientY)?.closest(".board-card") : null;
+    const targetItem = target && board.items.find((candidate) => candidate.id === target.dataset.id);
+    if (!targetItem || targetItem.id === gesture.fromId) {
+      showToast("Reliez le premier point à une autre carte.");
+      return;
+    }
+    const endpoints = {
+      start: cardAnchor(gesture.fromId, gesture.fromAnchor),
+      end: cardAnchor(targetItem.id, anchorAtPointer(target, event)),
+    };
+    snapshotState();
+    board.items.push({
+      id: newId(),
+      type: "connector",
+      fromId: gesture.fromId,
+      toId: targetItem.id,
+      fromAnchor: gesture.fromAnchor,
+      toAnchor: anchorAtPointer(target, event),
+      x1: endpoints.start.x,
+      y1: endpoints.start.y,
+      x2: endpoints.end.x,
+      y2: endpoints.end.y,
+      color: "#d7f36a",
+    });
+    renderBoard();
+    scheduleSave();
+    return;
+  }
+  if (!drawingGesture) return;
+  const gesture = drawingGesture;
+  drawingGesture = null;
+  connectorLayer.querySelector(".temporary-vector")?.remove();
+  if (gesture.points.length < 2) return;
+  snapshotState();
+  if (gesture.type === "line") {
+    const end = gesture.points.at(-1);
+    board.items.push({ id: newId(), type: "connector", x1: gesture.start.x, y1: gesture.start.y, x2: end.x, y2: end.y, color: "#d7f36a" });
+  } else board.items.push({ id: newId(), type: "drawing", points: gesture.points, color: "#d7f36a" });
+  renderBoard();
+  scheduleSave();
+}
+
+function showDialog(title, copy, note = "", confirmLabel = "") {
+  dialogTitle.textContent = title;
+  dialogCopy.textContent = copy;
+  dialogNote.textContent = note;
+  dialogNote.hidden = !note;
+  const confirmButton = $("#dialog-confirm");
+  confirmButton.hidden = !confirmLabel;
+  confirmButton.textContent = confirmLabel;
+  infoDialog.showModal();
+}
+
+function showImportNotice() {
+  showDialog("L’import Milanote n’est pas disponible.", "Nous n’avons pas trouvé d’intégration publique officiellement documentée permettant d’importer des tableaux Milanote dans PixelBoard.", "Aucun mot de passe n’est demandé. Pour continuer, ajoutez ici manuellement vos notes et images.");
+}
+
+function showLocalNotice(title, copy, note = "") {
+  showDialog(title, copy, note);
+}
+
+function showCurrentStorageNotice() {
+  if (remoteSession) {
+    showLocalNotice("Espace partagé", `Vous êtes connecté à « ${remoteSession.workspace} ». Les tableaux sont enregistrés sur le serveur et se synchronisent entre les membres.`, "Les écritures utilisent un numéro de version pour détecter les modifications concurrentes.");
+  } else {
+    showLocalNotice("Espace local sur cet appareil", "Les tableaux sont enregistrés dans IndexedDB sur cet appareil.", apiReady
+      ? "Connectez-vous ou créez un compte avec une invitation pour accéder à l’espace partagé."
+      : "Les comptes d’équipe et la synchronisation nécessitent l’installation de l’API PHP/MySQL.");
+  }
+}
+
+function confirmEmptyBoard() {
+  pendingConfirm = () => {
+    snapshotState();
+    board.items = [];
+    renderBoard();
+    scheduleSave();
+    showToast("Le tableau est vide.");
+  };
+  showDialog("Vider ce tableau ?", "Cette action retire toutes les notes, images, tâches, dessins et connecteurs de ce tableau.", "Les autres tableaux et les profils de l’équipe seront conservés.", "Tout supprimer");
+}
+
+async function exportWorkspace() {
+  try {
+    let syncWarning = "";
+    try {
+      await saveImmediately();
+    } catch (error) {
+      if (!remoteSession) throw error;
+      syncWarning = ` Export local créé malgré une erreur de synchronisation : ${error.message}`;
+    }
+    const records = remoteSession
+      ? allStoredBoards()
+      : (await readAllRecords()).filter((record) => !record.id.startsWith(REMOTE_CACHE_PREFIX));
+    const exported = [];
+    for (const record of records) {
+      if (record.id === WORKSPACE_ID) {
+        exported.push({ id: record.id, members: record.members });
+        continue;
+      }
+      const copy = { ...record, items: [] };
+      for (const item of record.items || []) {
+        const exportedItem = { ...item };
+        if (item.image instanceof Blob) exportedItem.image = await imageDataUrl(item.image);
+        if (item.coverImage instanceof Blob) exportedItem.coverImage = await imageDataUrl(item.coverImage);
+        copy.items.push(exportedItem);
+      }
+      exported.push(copy);
+    }
+    const blob = new Blob([JSON.stringify({ format: "pixelboard", version: 1, exportedAt: new Date().toISOString(), records: exported }, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "pixelboard-espace.json";
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showToast(syncWarning || "Copie JSON de l’espace téléchargée.");
+  } catch (error) {
+    console.error("Échec de l’export PixelBoard.", error);
+    showToast("Impossible de préparer l’export. Vérifiez l’espace disponible dans le navigateur.");
+  }
+}
+
+function allStoredBoards() {
+  const result = new Map(boardRecords);
+  result.set(board.id, board);
+  return [...result.values()].filter((entry) => entry.id !== WORKSPACE_ID);
+}
+
+function allTasks() {
+  return allStoredBoards().flatMap((record) => (record.items || [])
+    .filter((item) => item.type === "todo")
+    .map((item) => ({ ...item, boardTitle: record.title, boardId: record.id })));
+}
+
+function avatarInitials(name) {
+  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("");
+}
+
+async function submitAccountForm(event, action) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form).entries());
+  let authenticated = false;
+  try {
+    const result = await apiRequest(action, { method: "POST", body: values });
+    authenticated = true;
+    apiReady = true;
+    apiState = "ready";
+    inviteCodeValue = "";
+    await loadRemoteWorkspace(result, await readAllRecords());
+    renderBoard();
+    viewport.scrollLeft = board.viewX;
+    viewport.scrollTop = board.viewY;
+    renderTeam();
+    showToast(action === "register" ? "Compte créé, vous êtes connecté à l’espace partagé." : "Connexion à l’espace partagé réussie.");
+  } catch (error) {
+    console.error("Échec de connexion à l’espace partagé.", error);
+    if (authenticated) {
+      remoteSession = null;
+      apiReady = false;
+      apiState = "error";
+      apiMessage = `Connexion obtenue, mais chargement impossible : ${error.message}. Rechargez la page pour réessayer.`;
+      const localRecords = await readAllRecords();
+      boardRecords = new Map(localWorkspaceRecords(localRecords).map((record) => [record.id, normalizeBoard(record)]));
+      const meta = localRecords.find((record) => record.id === WORKSPACE_ID);
+      members = Array.isArray(meta?.members) ? meta.members : defaultMembers();
+      board = normalizeBoard(boardRecords.get(ROOT_ID) || makeDefaultBoard());
+      boardRecords.set(board.id, structuredClone(board));
+      renderBoard();
+    }
+    showToast(error.message);
+  }
+}
+
+async function signOutAccount() {
+  try {
+    try {
+      await saveImmediately();
+    } catch (error) {
+      if (!pendingRemoteBoardIds.size) throw error;
+      console.error("Déconnexion avec des modifications locales en attente.", error);
+    }
+    await apiRequest("logout", { method: "POST", body: {} });
+    clearInterval(remoteSyncTimer);
+    remoteSession = null;
+    remoteVersions = new Map();
+    history = [];
+    redoHistory = [];
+    updateHistoryButtons();
+    inviteCodeValue = "";
+    const records = await readAllRecords();
+    boardRecords = new Map(localWorkspaceRecords(records).map((record) => [record.id, normalizeBoard(record)]));
+    const meta = records.find((record) => record.id === WORKSPACE_ID);
+    members = Array.isArray(meta?.members) ? meta.members : defaultMembers();
+    board = normalizeBoard(boardRecords.get(ROOT_ID) || makeDefaultBoard());
+    boardRecords.set(board.id, structuredClone(board));
+    renderBoard();
+    renderTeam();
+    showToast(pendingRemoteBoardIds.size
+      ? "Déconnecté. Une copie non synchronisée reste conservée; reconnectez-vous pour l’exporter."
+      : "Déconnecté. L’espace local reste disponible sur cet appareil.");
+  } catch (error) {
+    console.error("Échec de déconnexion.", error);
+    showToast(`Déconnexion impossible : ${error.message}`);
+  }
+}
+
+async function createInviteCode() {
+  try {
+    const result = await apiRequest("invite", { method: "POST", body: {} });
+    inviteCodeValue = result.invite_code;
+    renderAuthControls();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function importLocalBoards() {
+  const records = localWorkspaceRecords(await readAllRecords());
+  if (!records.length) return;
+  try {
+    const importedBySource = new Map(allStoredBoards()
+      .filter((record) => record.importSourceId)
+      .map((record) => [record.importSourceId, record]));
+    const boardIdMap = new Map(records.map((record) => [
+      record.id,
+      importedBySource.get(record.id)?.id || newId(),
+    ]));
+    const memberIds = new Set(members.map((member) => member.id));
+    for (const record of records) {
+      let copy = importedBySource.get(record.id);
+      if (!copy) {
+        copy = structuredClone(record);
+        copy.id = boardIdMap.get(record.id);
+        copy.importSourceId = record.id;
+        copy.parentId = boardIdMap.get(record.parentId) || null;
+        copy.items = (copy.items || []).map((item) => {
+          if (item.type === "board" && boardIdMap.has(item.boardId)) item.boardId = boardIdMap.get(item.boardId);
+          if (item.type === "todo" && item.assigneeId && !memberIds.has(item.assigneeId)) item.assigneeId = null;
+          return item;
+        });
+        copy = normalizeBoard(copy);
+        boardRecords.set(copy.id, copy);
+        remoteVersions.set(copy.id, 0);
+        importedBySource.set(record.id, copy);
+      }
+      if (remoteVersions.get(copy.id) === 0) await persistRecords([copy]);
+    }
+    const imported = [...importedBySource.values()].find((record) => record.parentId === null) || records[0];
+    board = normalizeBoard(imported);
+    boardRecords.set(board.id, structuredClone(board));
+    $("#import-local").dataset.available = "false";
+    renderBoard();
+    renderTeam();
+    showToast(`${records.length} tableau${records.length === 1 ? "" : "x"} importé${records.length === 1 ? "" : "s"} dans l’espace partagé.`);
+  } catch (error) {
+    console.error("Échec de l’import des tableaux locaux.", error);
+    setSaveStatus("Import incomplet", "has-error");
+    showToast(`Import interrompu : ${error.message}. Les tableaux d’origine restent dans ce navigateur.`);
+  }
+}
+
+async function resolvePendingCopies(mode) {
+  if (!remoteSession || !pendingRemoteBoardIds.size) return;
+  try {
+    const response = await apiRequest("boards");
+    const serverBoards = new Map(response.boards.map((entry) => [entry.id, entry]));
+    for (const id of [...pendingRemoteBoardIds]) {
+      const serverEntry = serverBoards.get(id);
+      if (mode === "publish") {
+        const draft = id === board.id ? board : boardRecords.get(id);
+        if (!draft) continue;
+        remoteVersions.set(id, serverEntry?.version || 0);
+        await saveRemoteBoard(draft);
+        await writeRecords([remoteCacheRecord(draft, false)]);
+        pendingRemoteBoardIds.delete(id);
+        continue;
+      }
+      if (serverEntry) {
+        const serverBoard = await deserializeBoard(serverEntry.data);
+        remoteVersions.set(id, serverEntry.version);
+        boardRecords.set(id, serverBoard);
+        await writeRecords([remoteCacheRecord(serverBoard, false)]);
+      } else {
+        remoteVersions.delete(id);
+        boardRecords.delete(id);
+        await deleteRecord(`${REMOTE_CACHE_PREFIX}${remoteSession.id}:${id}`);
+      }
+      pendingRemoteBoardIds.delete(id);
+    }
+    if (mode === "reload" && pendingRemoteBoardIds.size === 0 && !boardRecords.has(board.id)) {
+      board = normalizeBoard(boardRecords.get(ROOT_ID) || boardRecords.values().next().value || {
+        id: ROOT_ID, title: "Mon premier tableau", parentId: null, zoom: 1,
+        originX: ORIGIN.x, originY: ORIGIN.y, worldWidth: INITIAL_SIZE.width,
+        worldHeight: INITIAL_SIZE.height, viewX: ORIGIN.x, viewY: ORIGIN.y, items: [],
+      });
+    } else if (mode === "reload" && boardRecords.has(board.id)) {
+      board = normalizeBoard(boardRecords.get(board.id));
+    }
+    renderBoard();
+    renderTeam();
+    showToast(mode === "publish" ? "La copie locale a été publiée sur le serveur." : "La version serveur a été rechargée.");
+  } catch (error) {
+    console.error("Échec de résolution du conflit de synchronisation.", error);
+    renderAuthControls();
+    showToast(`Conflit non résolu : ${error.message}. La copie locale reste conservée.`);
+  }
+}
+
+function confirmConflictResolution(mode) {
+  const publish = mode === "publish";
+  pendingConfirm = () => resolvePendingCopies(mode);
+  showDialog(
+    publish ? "Remplacer la version serveur ?" : "Abandonner la copie locale ?",
+    publish
+      ? "La copie locale en conflit remplacera la version serveur actuelle pour les tableaux concernés."
+      : "La version serveur remplacera la copie locale en conflit dans l’espace de travail courant.",
+    "Exportez l’espace avant de continuer si vous souhaitez conserver les deux versions.",
+    publish ? "Publier ma copie" : "Recharger le serveur",
+  );
+}
+
+function renderTeam() {
+  if (!$("#member-list")) return;
+  renderAuthControls();
+  $("#add-member-toggle").hidden = Boolean(remoteSession);
+  $("#member-form").hidden = Boolean(remoteSession);
+  $("#local-notice").textContent = remoteSession
+    ? `Espace partagé « ${remoteSession.workspace} ». Les tableaux et tâches sont enregistrés sur le serveur et visibles par les membres connectés.`
+    : apiReady
+      ? "Mode local sur cet appareil. Pour partager les tableaux, connectez-vous à l’espace de votre équipe."
+      : "Équipe locale enregistrée sur cet appareil. Les invitations et la synchronisation partagée ne sont pas connectées.";
+  $("#storage-label").textContent = remoteSession ? "Espace partagé" : "Enregistré ici";
+  $("#storage-note").textContent = remoteSession
+    ? "Tableau partagé · synchronisation serveur active"
+    : "Canvas sans limites · enregistré dans ce navigateur";
+  $("#help-link").textContent = remoteSession ? "Espace partagé" : "Données locales";
+  const avatars = $("#rail-avatars");
+  avatars.replaceChildren();
+  members.slice(0, 4).forEach((member) => {
+    const avatar = document.createElement("button");
+    avatar.type = "button";
+    avatar.className = "member-avatar";
+    avatar.textContent = avatarInitials(member.name);
+    avatar.title = `${member.name} · ${member.role}`;
+    avatar.style.setProperty("--member-color", member.color);
+    avatar.addEventListener("click", () => {
+      selectedMember = member.id;
+      teamPanel.hidden = false;
+      renderTeam();
+    });
+    avatars.append(avatar);
+  });
+  $("#team-count").textContent = String(members.length);
+  renderMembers();
+  renderAssigneeOptions();
+  renderTasks();
+}
+
+function renderAuthControls() {
+  const section = $("#auth-section");
+  section.hidden = apiState === "missing";
+  const forms = $("#auth-forms");
+  const account = $("#account-controls");
+  forms.hidden = Boolean(remoteSession) || apiState === "error";
+  account.hidden = !remoteSession;
+  $("#auth-description").textContent = apiState === "error"
+    ? `Serveur équipe indisponible : ${apiMessage} Les données locales restent sur cet appareil.`
+    : remoteSession
+      ? ""
+      : "Connectez-vous avec votre compte ou créez-en un avec le code transmis par le propriétaire.";
+  $("#login-form").hidden = registerMode;
+  $("#register-form").hidden = !registerMode;
+  $("#auth-heading").textContent = registerMode ? "Créer un compte membre" : "Accéder à l’espace partagé";
+  $("#auth-mode-toggle").textContent = registerMode ? "J’ai déjà un compte" : "J’ai un code d’invitation";
+  $("#account-summary").textContent = remoteSession
+    ? `${remoteSession.name} · ${remoteSession.email} · ${remoteSession.workspace}`
+    : "";
+  const syncWarning = $("#sync-warning");
+  syncWarning.hidden = !remoteSession || !pendingRemoteBoardIds.size;
+  syncWarning.textContent = pendingRemoteBoardIds.size
+    ? `${pendingRemoteBoardIds.size} tableau${pendingRemoteBoardIds.size > 1 ? "x" : ""} en conflit reste${pendingRemoteBoardIds.size > 1 ? "nt" : ""} en copie locale. Exportez l’espace, puis choisissez de publier votre copie ou de recharger le serveur.`
+    : "";
+  $("#invite-create").hidden = remoteSession?.role !== "owner";
+  $("#import-local").hidden = $("#import-local").dataset.available !== "true" || Boolean(!remoteSession);
+  $("#publish-local-copy").hidden = !remoteSession || !pendingRemoteBoardIds.size;
+  $("#reload-shared-copy").hidden = !remoteSession || !pendingRemoteBoardIds.size;
+  $("#invite-display").hidden = !inviteCodeValue;
+  $("#invite-code").value = inviteCodeValue;
+  $("#login-form").querySelectorAll("input,button").forEach((input) => { input.disabled = apiState !== "ready"; });
+  $("#register-form").querySelectorAll("input,button").forEach((input) => { input.disabled = apiState !== "ready"; });
+}
+
+function renderMembers() {
+  const list = $("#member-list");
+  list.replaceChildren();
+  if (!members.length) {
+    list.append(emptyMessage("Aucun profil pour le moment.", "Ajoutez les personnes qui participeront au projet."));
+    return;
+  }
+  if (selectedMember) {
+    const selected = getMember(selectedMember);
+    if (!selected) selectedMember = null;
+    else {
+      const back = document.createElement("button");
+      back.type = "button";
+      back.className = "profile-back";
+      back.textContent = "← Toute l’équipe";
+      back.addEventListener("click", () => { selectedMember = null; renderTeam(); });
+      list.append(back, createMemberRow(selected, true));
+      const tasks = allTasks().filter((task) => task.assigneeId === selected.id);
+      const title = document.createElement("h4");
+      title.className = "profile-subhead";
+      title.textContent = `Tâches de ${selected.name.split(" ")[0]}`;
+      list.append(title, ...tasks.map(renderProfileTask));
+      if (!tasks.length) list.append(emptyMessage("Pas encore de tâche assignée.", "Les tâches assignées apparaîtront ici."));
+      return;
+    }
+  }
+  members.forEach((member) => list.append(createMemberRow(member, false)));
+}
+
+function createMemberRow(member, profileView) {
+  const row = document.createElement("div");
+  row.className = "member-row";
+  const avatar = document.createElement("button");
+  avatar.type = "button";
+  avatar.className = "member-avatar";
+  avatar.textContent = avatarInitials(member.name);
+  avatar.style.setProperty("--member-color", member.color);
+  avatar.setAttribute("aria-label", `Profil de ${member.name}`);
+  avatar.addEventListener("click", () => { selectedMember = member.id; renderTeam(); });
+  const copy = document.createElement("div");
+  copy.className = "member-copy";
+  const name = document.createElement("input");
+  name.className = "member-name-edit";
+  name.value = member.name;
+  name.maxLength = 80;
+  name.setAttribute("aria-label", `Nom de ${member.name}`);
+  const role = document.createElement("input");
+  role.className = profileView ? "member-role-edit" : "member-role-edit role-tag";
+  role.value = member.role;
+  role.maxLength = 40;
+  role.setAttribute("aria-label", `Rôle de ${member.name}`);
+  const canEditName = !remoteSession || remoteSession.role === "owner" || member.id === `user:${remoteSession.id}`;
+  const canEditTag = !remoteSession || remoteSession.role === "owner";
+  name.disabled = !canEditName;
+  role.disabled = !canEditTag;
+  if (!remoteSession) [name, role].forEach((input) => input.addEventListener("focus", snapshotState, { once: true }));
+  name.addEventListener("input", () => {
+    member.name = name.value;
+    name.setAttribute("aria-label", `Nom de ${member.name || "ce membre"}`);
+    avatar.textContent = avatarInitials(member.name);
+    avatar.setAttribute("aria-label", `Profil de ${member.name}`);
+    renderRailAvatars();
+    renderAssigneeOptions();
+    renderTasks();
+    const subhead = $(".profile-subhead");
+    if (profileView && subhead) subhead.textContent = `Tâches de ${member.name.split(" ")[0] || member.name}`;
+    if (remoteSession) scheduleRemoteMemberSave(member);
+    else scheduleSave();
+  });
+  role.addEventListener("input", () => {
+    member.role = role.value;
+    role.setAttribute("aria-label", `Rôle de ${member.name || "ce membre"}`);
+    renderRailAvatars();
+    renderAssigneeOptions();
+    renderTasks();
+    if (remoteSession) scheduleRemoteMemberSave(member);
+    else scheduleSave();
+  });
+  copy.append(name, role);
+  const color = document.createElement("input");
+  color.type = "color";
+  color.className = "member-color";
+  color.value = member.color;
+  color.setAttribute("aria-label", `Couleur de ${member.name}`);
+  color.disabled = !canEditTag;
+  if (!remoteSession) color.addEventListener("focus", snapshotState, { once: true });
+  color.addEventListener("input", () => {
+    member.color = color.value;
+    avatar.style.setProperty("--member-color", member.color);
+    document.querySelectorAll(`[data-assignee-color="${member.id}"]`).forEach((node) => node.style.setProperty("--member-color", member.color));
+    renderRailAvatars();
+    if (remoteSession) scheduleRemoteMemberSave(member);
+    else scheduleSave();
+  });
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "member-open";
+  open.textContent = "›";
+  open.setAttribute("aria-label", `Voir le profil de ${member.name}`);
+  open.addEventListener("click", () => { selectedMember = member.id; renderTeam(); });
+  row.append(avatar, copy, color);
+  if (!profileView) row.append(open);
+  return row;
+}
+
+function renderRailAvatars() {
+  const avatars = $("#rail-avatars");
+  avatars.replaceChildren();
+  members.slice(0, 4).forEach((member) => {
+    const avatar = document.createElement("button");
+    avatar.type = "button";
+    avatar.className = "member-avatar";
+    avatar.textContent = avatarInitials(member.name);
+    avatar.title = `${member.name} · ${member.role}`;
+    avatar.style.setProperty("--member-color", member.color);
+    avatar.addEventListener("click", () => { selectedMember = member.id; teamPanel.hidden = false; renderTeam(); });
+    avatars.append(avatar);
+  });
+}
+
+function renderAssigneeOptions() {
+  const selects = [
+    $('#task-form select[name="assignee"]'),
+    ...canvas.querySelectorAll('.todo-meta select[aria-label="Membre assigné"]'),
+  ].filter(Boolean);
+  selects.forEach((select) => {
+    const previous = select.value;
+    select.replaceChildren(new Option(select.closest("#task-form") ? "Sans assignation" : "Non assignée", ""));
+    members.forEach((member) => select.add(new Option(`${member.name} · ${member.role}`, member.id)));
+    if (members.some((member) => member.id === previous)) select.value = previous;
+  });
+}
+
+function renderProfileTask(task) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `profile-task status-${task.status || "todo"}`;
+  button.innerHTML = `<span class="task-status-mark"></span><span></span><small></small>`;
+  $("span:nth-child(2)", button).textContent = task.title || "Tâche sans titre";
+  $("small", button).textContent = `${statusLabel(task.status)} · ${task.boardTitle}`;
+  button.addEventListener("click", () => jumpToTask(task.boardId, task.id));
+  return button;
+}
+
+function statusLabel(status) {
+  return ({ todo: "À faire", doing: "En cours", done: "Terminée" })[status] || "À faire";
+}
+
+function renderTasks() {
+  const list = $("#task-list");
+  list.replaceChildren();
+  const tasks = allTasks().filter((task) => taskFilter === "all" || task.status === taskFilter);
+  if (!tasks.length) {
+    list.append(emptyMessage(taskFilter === "done" ? "Aucune tâche terminée." : "Aucune tâche ici.", "Créez une tâche et assignez-la à un membre."));
+    return;
+  }
+  tasks.forEach((task) => {
+    const row = document.createElement("div");
+    row.className = `task-row status-${task.status || "todo"}`;
+    const check = document.createElement("button");
+    check.type = "button";
+    check.className = "task-status-mark";
+    check.textContent = task.status === "done" ? "✓" : "";
+    check.setAttribute("aria-label", task.status === "done" ? "Marquer à faire" : "Marquer terminée");
+    check.addEventListener("click", () => updateTaskStatus(task, task.status === "done" ? "todo" : "done"));
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "task-copy";
+    const title = document.createElement("strong");
+    title.textContent = task.title || "Tâche sans titre";
+    const meta = document.createElement("span");
+    const assignee = getMember(task.assigneeId);
+    meta.textContent = `${assignee ? assignee.name : "Non assignée"} · ${task.boardTitle}`;
+    if (assignee) {
+      meta.dataset.assigneeColor = assignee.id;
+      meta.style.setProperty("--member-color", assignee.color);
+    }
+    copy.append(title, meta);
+    copy.addEventListener("click", () => jumpToTask(task.boardId, task.id));
+    const state = document.createElement("select");
+    state.className = "task-state-select";
+    state.setAttribute("aria-label", `État de ${task.title || "la tâche"}`);
+    [["todo", "À faire"], ["doing", "En cours"], ["done", "Terminée"]].forEach(([value, label]) => state.add(new Option(label, value, false, task.status === value)));
+    state.addEventListener("change", () => updateTaskStatus(task, state.value));
+    row.append(check, copy, state);
+    list.append(row);
+  });
+}
+
+function emptyMessage(titleText, detailText) {
+  const node = document.createElement("div");
+  node.className = "team-empty";
+  const title = document.createElement("strong");
+  title.textContent = titleText;
+  const detail = document.createElement("span");
+  detail.textContent = detailText;
+  node.append(title, detail);
+  return node;
+}
+
+function updateTaskStatus(task, status) {
+  const record = boardRecords.get(task.boardId);
+  const targetBoard = task.boardId === board.id ? board : record;
+  const item = targetBoard?.items.find((candidate) => candidate.id === task.id);
+  if (!item) return;
+  snapshotState();
+  item.status = status;
+  if (targetBoard.id === board.id) renderBoard();
+  else {
+    boardRecords.set(targetBoard.id, structuredClone(targetBoard));
+    renderTeam();
+  }
+  persistRecords([targetBoard, { id: WORKSPACE_ID, members }]).then(() => setSaveStatus("Enregistré")).catch(reportSaveError);
+}
+
+function jumpToTask(boardId, taskId) {
+  teamPanel.hidden = true;
+  if (board.id !== boardId) openBoard(boardId);
+  const task = board.items.find((item) => item.id === taskId);
+  if (!task) return;
+  focusWorldPoint(task.x, task.y);
+  requestAnimationFrame(() => {
+    const card = canvas.querySelector(`[data-id="${CSS.escape(taskId)}"]`);
+    if (card) focusSelectedCard(card);
+  });
+}
+
+function reportSaveError(error) {
+  console.error("Échec de la sauvegarde.", error);
+  setSaveStatus("Non enregistré", "has-error");
+  showToast(remoteSession
+    ? error.localBackupSaved
+      ? `Synchronisation refusée : ${error.message}. Une copie locale est conservée.`
+      : `Sauvegarde impossible : ${error.message}. Exportez la copie encore ouverte avant de quitter.`
+    : "Impossible d’enregistrer. Vérifiez le stockage local.");
+}
+
+async function addMemberFromForm(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const name = String(data.get("name") || "").trim();
+  const role = String(data.get("role") || "").trim();
+  const color = String(data.get("color") || "#d7f36a");
+  if (!name || !role) return;
+  snapshotState();
+  members.push({ id: newId(), name, role, color: /^#[0-9a-f]{6}$/i.test(color) ? color : "#d7f36a" });
+  event.currentTarget.reset();
+  event.currentTarget.hidden = true;
+  renderTeam();
+  try { await writeRecords([{ id: WORKSPACE_ID, members }]); }
+  catch (error) { reportSaveError(error); }
+}
+
+function addTaskFromForm(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const title = String(data.get("title") || "").trim();
+  if (!title) return;
+  addTask(viewportCenter(), { title, assigneeId: String(data.get("assignee") || "") || null });
+  event.currentTarget.reset();
+  event.currentTarget.hidden = true;
+  showToast("Tâche créée sur le tableau.");
+}
+
+function handleUndo() {
+  if (!history.length) return;
+  redoHistory.push(structuredClone({ boards: allStoredBoards(), members, activeBoardId: board.id }));
+  const previous = history.pop();
+  restoreHistoryState(previous);
+  updateHistoryButtons();
+}
+
+function handleRedo() {
+  if (!redoHistory.length) return;
+  history.push(structuredClone({ boards: allStoredBoards(), members, activeBoardId: board.id }));
+  const next = redoHistory.pop();
+  restoreHistoryState(next);
+  updateHistoryButtons();
+}
+
+function renderAfterBoardSwitch(record) {
+  board = normalizeBoard(record);
+  renderBoard();
+  requestAnimationFrame(() => {
+    viewport.scrollLeft = board.viewX;
+    viewport.scrollTop = board.viewY;
+  });
+}
+
+function initEvents() {
+  const railToggle = $("#rail-toggle");
+  const railQuery = window.matchMedia("(max-width: 950px)");
+  const updateRailToggle = () => {
+    const collapsed = railQuery.matches || $(".app-shell").classList.contains("is-rail-collapsed");
+    const label = collapsed ? "Déployer le panneau d’outils" : "Réduire le panneau d’outils";
+    railToggle.hidden = railQuery.matches;
+    railToggle.setAttribute("aria-expanded", String(!collapsed));
+    railToggle.setAttribute("aria-label", label);
+    railToggle.title = label;
+  };
+  railToggle.addEventListener("click", () => {
+    $(".app-shell").classList.toggle("is-rail-collapsed");
+    updateRailToggle();
+  });
+  updateRailToggle();
+  $("#empty-add-note").addEventListener("click", () => addNote());
+  $("#tool-note").addEventListener("click", () => addNote());
+  $("#tool-link").addEventListener("click", () => addLink());
+  $("#tool-todo").addEventListener("click", () => addTask());
+  $("#tool-board").addEventListener("click", () => addNestedBoard());
+  $("#tool-image").addEventListener("click", () => imageInput.click());
+  $("#tool-trash").addEventListener("click", confirmEmptyBoard);
+  $("#import-button").addEventListener("click", showImportNotice);
+  $("#help-button").addEventListener("click", showCurrentStorageNotice);
+  $("#help-link").addEventListener("click", (event) => { event.preventDefault(); showCurrentStorageNotice(); });
+  $("#share-button").addEventListener("click", showCurrentStorageNotice);
+  $("#export-button").addEventListener("click", exportWorkspace);
+  $("#undo-button").addEventListener("click", handleUndo);
+  $("#redo-button").addEventListener("click", handleRedo);
+  $("#zoom-in").addEventListener("click", () => adjustZoom(.1));
+  $("#zoom-out").addEventListener("click", () => adjustZoom(-.1));
+  $("#fit-board").addEventListener("click", () => {
+    const items = board.items.filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y));
+    if (!items.length) {
+      board.zoom = 1;
+      viewport.scrollLeft = board.originX;
+      viewport.scrollTop = board.originY;
+    } else {
+      const left = Math.min(...items.map((item) => item.x));
+      const top = Math.min(...items.map((item) => item.y));
+      board.zoom = Math.max(MIN_ZOOM, Math.min(1, (viewport.clientWidth - 140) / 1200));
+      focusWorldPoint(left + 500, top + 280);
+    }
+    updateZoom();
+    updateViewSave();
+  });
+  $("#delete-vector-button").addEventListener("click", deleteSelectedVector);
+  document.querySelectorAll(".rail-link[data-tool]").forEach((button) => button.addEventListener("click", () => setTool(button.dataset.tool)));
+  $("#profile-button").addEventListener("click", () => {
+    teamPanel.hidden = false;
+    selectedMember = null;
+    renderTeam();
+  });
+  $("#team-toggle").addEventListener("click", () => { teamPanel.hidden = !teamPanel.hidden; selectedMember = null; renderTeam(); });
+  $("#team-close").addEventListener("click", () => { teamPanel.hidden = true; });
+  $("#add-member-toggle").addEventListener("click", () => { $("#member-form").hidden = !$("#member-form").hidden; });
+  $("#add-task-toggle").addEventListener("click", () => { $("#task-form").hidden = !$("#task-form").hidden; });
+  $("#member-form").addEventListener("submit", addMemberFromForm);
+  $("#task-form").addEventListener("submit", addTaskFromForm);
+  $("#login-form").addEventListener("submit", (event) => submitAccountForm(event, "login"));
+  $("#register-form").addEventListener("submit", (event) => submitAccountForm(event, "register"));
+  $("#auth-mode-toggle").addEventListener("click", () => { registerMode = !registerMode; renderAuthControls(); });
+  $("#logout-button").addEventListener("click", signOutAccount);
+  $("#invite-create").addEventListener("click", createInviteCode);
+  $("#publish-local-copy").addEventListener("click", () => confirmConflictResolution("publish"));
+  $("#reload-shared-copy").addEventListener("click", () => confirmConflictResolution("reload"));
+  $("#invite-copy").addEventListener("click", async () => {
+    const input = $("#invite-code");
+    try {
+      await navigator.clipboard.writeText(input.value);
+      showToast("Code d’invitation copié.");
+    } catch {
+      input.focus();
+      input.select();
+      showToast("Sélectionnez le code pour le copier manuellement.");
+    }
+  });
+  $("#import-local").addEventListener("click", () => {
+    pendingConfirm = importLocalBoards;
+    showDialog("Importer les tableaux locaux ?", "Une copie des tableaux enregistrés sur cet appareil sera ajoutée à l’espace partagé.", "Aucun tableau local ne sera supprimé. Les autres membres pourront voir les tableaux importés.", "Importer les tableaux");
+  });
+  document.querySelectorAll(".filter-chip").forEach((button) => button.addEventListener("click", () => {
+    taskFilter = button.dataset.filter;
+    document.querySelectorAll(".filter-chip").forEach((chip) => chip.classList.toggle("is-active", chip === button));
+    renderTasks();
+  }));
+  $("#dialog-dismiss").addEventListener("click", () => infoDialog.close());
+  $("#dialog-close").addEventListener("click", () => infoDialog.close());
+  $("#dialog-done").addEventListener("click", () => infoDialog.close());
+  $("#dialog-confirm").addEventListener("click", () => {
+    pendingConfirm?.();
+    pendingConfirm = null;
+    infoDialog.close();
+  });
+
+  canvas.addEventListener("pointerdown", (event) => {
+    if (activeTool === "line") return;
+    const handle = event.target.closest("[data-drag-handle]");
+    if (handle) {
+      startCardDrag(event, handle);
+      return;
+    }
+  });
+  canvas.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-action]");
+    if (!button) return;
+    const card = button.closest(".board-card");
+    const item = board.items.find((candidate) => candidate.id === card?.dataset.id);
+    if (!item) return;
+    if (button.dataset.action === "delete") {
+      snapshotState();
+      board.items = board.items.filter((candidate) => candidate.id !== item.id);
+      renderBoard();
+      scheduleSave();
+    } else if (button.dataset.action === "open-board") {
+      openBoard(item.boardId);
+    } else if (button.dataset.action === "choose-cover") {
+      card.querySelector(".nested-board-cover-input")?.click();
+    } else if (button.dataset.action === "remove-cover") {
+      snapshotState();
+      delete item.coverImage;
+      delete item.coverImageName;
+      renderBoard();
+      scheduleSave();
+    } else if (button.dataset.action === "zoom-in" || button.dataset.action === "zoom-out") {
+      snapshotState();
+      item.imageZoom = Math.max(1, Math.min(7, Math.round(((item.imageZoom ?? 1) + (button.dataset.action === "zoom-in" ? .35 : -.35)) * 10) / 10));
+      item.imagePanX = Math.max(-imagePanLimit(item.imageZoom), Math.min(imagePanLimit(item.imageZoom), item.imagePanX ?? 0));
+      item.imagePanY = Math.max(-imagePanLimit(item.imageZoom), Math.min(imagePanLimit(item.imageZoom), item.imagePanY ?? 0));
+      applyImageTransform(card.querySelector(".image-plate"), item);
+      scheduleSave();
+    }
+  });
+
+  viewport.addEventListener("pointerdown", (event) => {
+    if (activeTool !== "select" && !spacePressed) beginVector(event);
+    else beginPan(event);
+  });
+  viewport.addEventListener("pointermove", (event) => {
+    if (panGesture) panMove(event);
+    if (drawingGesture || connectionGesture || connectorResizeGesture) moveVector(event);
+  });
+  const endViewportPointer = (event) => {
+    if (panGesture) {
+      panGesture = null;
+      viewport.classList.remove("is-panning");
+      updateViewSave();
+    }
+    if (connectorResizeGesture && connectorResizeGesture.pointerId === event.pointerId) {
+      connectorResizeGesture = null;
+      scheduleSave();
+    }
+    if (drawingGesture || connectionGesture) endVector(event.type === "pointerup" ? event : null);
+  };
+  viewport.addEventListener("pointerup", endViewportPointer);
+  viewport.addEventListener("pointercancel", endViewportPointer);
+
+  viewport.addEventListener("scroll", () => {
+    board.viewX = viewport.scrollLeft;
+    board.viewY = viewport.scrollTop;
+    clearTimeout(edgeTimer);
+    edgeTimer = setTimeout(() => {
+      ensureInfiniteSpace();
+      saveAfterQuietScroll();
+    }, 100);
+  });
+  viewport.addEventListener("dragenter", (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+    event.preventDefault();
+    $("#drop-overlay").classList.add("is-visible");
+  });
+  viewport.addEventListener("dragover", (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+    event.preventDefault();
+    $("#drop-overlay").classList.add("is-visible");
+  });
+  viewport.addEventListener("dragleave", (event) => {
+    if (!viewport.contains(event.relatedTarget)) $("#drop-overlay").classList.remove("is-visible");
+  });
+  viewport.addEventListener("drop", async (event) => {
+    if (!event.dataTransfer?.files.length) return;
+    event.preventDefault();
+    $("#drop-overlay").classList.remove("is-visible");
+    try { await addImageFiles(event.dataTransfer.files, event.clientX, event.clientY); }
+    catch (error) { reportSaveError(error); }
+  });
+  imageInput.addEventListener("change", async () => {
+    try { await addImageFiles(imageInput.files); }
+    catch (error) { reportSaveError(error); }
+    finally { imageInput.value = ""; }
+  });
+  viewport.addEventListener("wheel", (event) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const rect = viewport.getBoundingClientRect();
+    adjustZoom(event.deltaY < 0 ? .08 : -.08, event.clientX - rect.left, event.clientY - rect.top);
+  }, { passive: false });
+  window.addEventListener("keydown", (event) => {
+    if (event.code === "Space" && !event.target.matches("input,textarea,[contenteditable=true]")) spacePressed = true;
+    if ((event.key === "Delete" || event.key === "Backspace") && selectedVectorId && !event.target.matches("input,textarea,[contenteditable=true]")) {
+      event.preventDefault();
+      deleteSelectedVector();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) handleRedo(); else handleUndo();
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") { event.preventDefault(); handleRedo(); }
+  });
+  window.addEventListener("keyup", (event) => { if (event.code === "Space") spacePressed = false; });
+  window.addEventListener("blur", () => { spacePressed = false; });
+  window.addEventListener("resize", () => {
+    updateZoom();
+    updateRailToggle();
+  });
+}
+
+async function start() {
+  try {
+    db = await openDatabase();
+    const records = await readAllRecords();
+    localWorkspaceRecords(records).forEach((record) => boardRecords.set(record.id, normalizeBoard(record)));
+    const meta = records.find((record) => record.id === WORKSPACE_ID);
+    members = Array.isArray(meta?.members) ? meta.members : defaultMembers();
+    board = normalizeBoard(boardRecords.get(ROOT_ID) || makeDefaultBoard());
+    boardRecords.set(board.id, structuredClone(board));
+    lastZIndex = Math.max(5, ...allStoredBoards().flatMap((record) => record.items.map((item) => item.z ?? 1)));
+    await writeRecords([board, { id: WORKSPACE_ID, members }]);
+    try {
+      const auth = await apiRequest("auth");
+      apiReady = true;
+      apiState = "ready";
+      if (auth.user) await loadRemoteWorkspace(auth, records);
+      lastZIndex = Math.max(5, ...allStoredBoards().flatMap((record) => record.items.map((item) => item.z ?? 1)));
+    } catch (error) {
+      remoteSession = null;
+      apiReady = false;
+      if (error.apiMissing) {
+        apiState = "missing";
+      } else {
+        apiState = "error";
+        apiMessage = error.message;
+        console.error("Serveur équipe indisponible.", error);
+      }
+      boardRecords = new Map(localWorkspaceRecords(records).map((record) => [record.id, normalizeBoard(record)]));
+      const meta = records.find((record) => record.id === WORKSPACE_ID);
+      members = Array.isArray(meta?.members) ? meta.members : defaultMembers();
+      board = normalizeBoard(boardRecords.get(ROOT_ID) || makeDefaultBoard());
+      boardRecords.set(board.id, structuredClone(board));
+    }
+    renderBoard();
+    updateHistoryButtons();
+    requestAnimationFrame(() => {
+      viewport.scrollLeft = board.viewX;
+      viewport.scrollTop = board.viewY;
+    });
+  } catch (error) {
+    console.error("Impossible d’ouvrir l’espace de travail.", error);
+    apiReady = false;
+    apiState = "error";
+    apiMessage = "Le stockage local de ce navigateur est indisponible.";
+    board = makeDefaultBoard();
+    members = defaultMembers();
+    boardRecords.set(board.id, board);
+    renderBoard();
+    setSaveStatus("Stockage indisponible", "has-error");
+    showToast("Le navigateur ne permet pas l’enregistrement local. Vos modifications ne seront pas conservées.");
+  }
+  initEvents();
+  renderTeam();
+}
+
+start();

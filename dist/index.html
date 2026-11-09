@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#173a35" />
+    <meta name="description" content="Un espace visuel local pour organiser idées, images, tableaux et tâches d’équipe." />
+    <title>PixelBoard — Atelier d’idées</title>
+    <script type="module" crossorigin src="/assets/index-Dvvl8sRM.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CjE1Okk9.css">
+  </head>
+  <body>
+    <!-- THESIS: An open pixel-art workspace where boards, references, and team tasks can live together.
+    OWN-WORLD: Ink-green workbench, luminous chartreuse actions, square cards, coordinate grid, and vivid pixel art.
+    STORY: Gather a team, add and assign work, then move freely between nested boards and image references.
+    FIRST VIEWPORT: A compact tools rail and team drawer frame an expansive, pannable pixel canvas.
+    FORM: A tactile sprite atelier; grid coordinates, hard-edged paper cards, and local-first editing are functional, not decoration. -->
+    <div class="app-shell">
+      <aside class="index-rail" aria-label="Outils du tableau">
+        <div class="rail-brand-row">
+          <a class="brand-mark" href="#" aria-label="PixelBoard">
+            <span class="brand-pixel" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span>pixel<br />board</span>
+          </a>
+          <button class="rail-collapse" id="rail-toggle" type="button" aria-label="Réduire le panneau d’outils" aria-expanded="true" title="Réduire le panneau d’outils">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 4-6 6 6 6M6 10h10"/></svg>
+          </button>
+        </div>
+        <div class="rail-section" id="rail-tools">
+          <span class="rail-heading">OUTILS</span>
+          <button class="rail-link is-active" data-tool="select" type="button" title="Sélectionner et déplacer" aria-label="Sélectionner et déplacer">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 2 11 9-5 .5-2.5 5L4 2z"/></svg><span>Sélection</span>
+          </button>
+          <button class="rail-link" id="tool-note" type="button" title="Ajouter une note">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3.5h8l4 4v9H4zM12 3.5v4h4M7 11h6M7 14h4"/></svg><span>Note</span>
+          </button>
+          <button class="rail-link" id="tool-link" type="button" title="Ajouter un lien">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 12.5 6.5 14a3 3 0 0 1-4-4l3-3a3 3 0 0 1 4.2 0M12 7.5 13.5 6a3 3 0 0 1 4 4l-3 3a3 3 0 0 1-4.2 0M7 10h6"/></svg><span>Lien</span>
+          </button>
+          <button class="rail-link" id="tool-todo" type="button" title="Créer une tâche">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m3.5 6 1.5 1.5L8 4.5M10 6h6M3.5 13l1.5 1.5L8 11m2 2h6"/></svg><span>Tâche</span>
+          </button>
+          <button class="rail-link" data-tool="line" type="button" title="Relier deux cartes avec une flèche">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="15" r="2"/><circle cx="16" cy="5" r="2"/><path d="m5.5 13.7 9-7.4"/></svg><span>Connecteur</span>
+          </button>
+          <button class="rail-link" id="tool-board" type="button" title="Créer un tableau imbriqué">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM6 7h3v3H6zm5 0h3v3h-3zm-5 5h3v2H6z"/></svg><span>Tableau</span>
+          </button>
+          <button class="rail-link" id="tool-image" type="button" title="Ajouter des images ou les déposer">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM5 13l3-3 2 2 2-3 3 4M7 7h.01"/></svg><span>Images</span>
+          </button>
+          <button class="rail-link" data-tool="draw" type="button" title="Dessiner sur le tableau">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 14 8.5-8.5 3 3L7 17H4zM11 7l3 3M4 17h12"/></svg><span>Dessiner</span>
+          </button>
+          <button class="rail-link" id="tool-trash" type="button" title="Vider la corbeille du tableau">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2m3 0-.8 10H5.8L5 6m3 3v4m4-4v4"/></svg><span>Corbeille</span>
+          </button>
+        </div>
+        <div class="rail-team">
+          <span class="rail-heading">ÉQUIPE LOCALE</span>
+          <div class="team-avatars" id="rail-avatars"></div>
+          <button class="rail-link team-open" id="team-toggle" type="button" title="Membres et tâches">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="3"/><path d="M2 16c0-2.5 2-4 5-4s5 1.5 5 4M14 5a3 3 0 0 1 0 5m1 2c2 .5 3 1.8 3 4"/></svg><span>Équipe & tâches</span><span class="team-count" id="team-count">0</span>
+          </button>
+        </div>
+        <div class="rail-bottom">
+          <span class="storage-indicator"><i></i><span id="storage-label">Enregistré ici</span></span>
+          <a class="rail-help" href="#aide" id="help-link" title="Informations sur le stockage" aria-label="Informations sur le stockage">Données locales</a>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+
+        <section class="board-area" aria-label="Surface du tableau">
+          <div class="canvas-toolbar">
+            <div class="toolbar-primary">
+              <nav class="breadcrumbs" id="breadcrumbs" aria-label="Chemin du tableau"></nav>
+              <div class="topbar-actions" aria-label="Actions de l’espace">
+                <span class="save-status" id="save-status" role="status">Enregistré</span>
+                <button class="icon-button" id="undo-button" type="button" aria-label="Annuler" title="Annuler">↶</button>
+                <button class="icon-button" id="redo-button" type="button" aria-label="Rétablir" title="Rétablir">↷</button>
+                <button class="icon-button" id="share-button" type="button" aria-label="Partager" title="Partager">↗</button>
+                <button class="icon-button" id="export-button" type="button" aria-label="Exporter" title="Exporter">↓</button>
+                <button class="icon-button" id="import-button" type="button" aria-label="Import Milanote (indisponible)" title="Import Milanote (indisponible)">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m0 0 3-3m-3 3L7 9M4 13v3h12v-3"/></svg>
+                </button>
+                <button class="icon-button" id="help-button" type="button" aria-label="À propos" title="À propos">?</button>
+                <button class="avatar" id="profile-button" type="button" aria-label="Ouvrir l’équipe et le profil" title="Équipe et profil">P</button>
+              </div>
+            </div>
+            <div class="toolbar-secondary">
+              <div class="toolbar-context">
+                <span class="canvas-hint" id="canvas-hint"><span class="hint-drag" aria-hidden="true">⠿</span> Déplacez-vous librement · déposez des images ici</span>
+                <span class="grid-readout"><i></i> ESPACE OUVERT</span>
+              </div>
+              <div class="view-controls" aria-label="Contrôles du tableau">
+                <button class="view-button" id="zoom-out" type="button" aria-label="Dézoomer" title="Dézoomer">−</button>
+                <span id="zoom-level">100&nbsp;%</span>
+                <button class="view-button" id="zoom-in" type="button" aria-label="Zoomer" title="Zoomer">+</button>
+                <span class="control-divider"></span>
+                <button class="view-button fit-button" id="fit-board" type="button" aria-label="Recentrer" title="Recentrer"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/></svg></button>
+              </div>
+              <button class="delete-vector-button" id="delete-vector-button" type="button" hidden>× Supprimer</button>
+            </div>
+          </div>
+          <div class="canvas-viewport" id="canvas-viewport">
+            <div class="board-stage" id="board-stage">
+              <svg class="connector-layer" id="connector-layer" aria-label="Connecteurs et dessins"></svg>
+              <div class="board-canvas" id="board-canvas" aria-label="Cartes du tableau"></div>
+            </div>
+            <div class="drop-overlay" id="drop-overlay"><span>Déposez vos images sur le tableau</span></div>
+            <div class="empty-state" id="empty-state" hidden>
+              <span class="empty-mark">▦</span>
+              <h2>Un peu d’espace pour vos idées.</h2>
+              <p>Créez une note ou déposez vos images n’importe où sur le tableau.</p>
+              <button class="button button-dark" type="button" id="empty-add-note">Créer une note</button>
+            </div>
+          </div>
+          <footer class="canvas-footer">
+            <span id="item-count">3 éléments</span><span class="footer-divider">·</span>
+            <span id="storage-note">Canvas sans limites · enregistré dans ce navigateur</span>
+            <span class="canvas-footer-right">PIXELBOARD <span class="footer-seal">✳</span></span>
+          </footer>
+        </section>
+      </main>
+
+      <aside class="team-panel" id="team-panel" aria-label="Équipe et tâches" hidden>
+        <header class="team-panel-head">
+          <div><h2>Équipe & tâches</h2></div>
+          <button class="icon-button" id="team-close" type="button" aria-label="Fermer">×</button>
+        </header>
+        <p class="local-notice" id="local-notice">Équipe de démonstration enregistrée sur cet appareil. Les invitations et la synchronisation partagée ne sont pas connectées.</p>
+        <section class="auth-section" id="auth-section" aria-label="Compte et espace partagé" hidden>
+          <div class="auth-card" id="auth-forms">
+            <h3 id="auth-heading">Accéder à l’espace partagé</h3>
+            <p id="auth-description">Connectez-vous pour retrouver les tableaux de votre équipe.</p>
+            <form class="inline-form" id="login-form">
+              <label>Adresse e-mail<input name="email" type="email" autocomplete="email" required maxlength="254" /></label>
+              <label>Mot de passe<input name="password" type="password" autocomplete="current-password" required minlength="12" /></label>
+              <button class="button button-dark" type="submit">Se connecter</button>
+            </form>
+            <form class="inline-form" id="register-form" hidden>
+              <label>Code d’invitation<input name="invite_code" autocomplete="off" required maxlength="128" /></label>
+              <label>Nom affiché<input name="name" autocomplete="name" required maxlength="80" /></label>
+              <label>Adresse e-mail<input name="email" type="email" autocomplete="email" required maxlength="254" /></label>
+              <label>Mot de passe (12 caractères minimum)<input name="password" type="password" autocomplete="new-password" required minlength="12" /></label>
+              <button class="button button-dark" type="submit">Créer mon compte</button>
+            </form>
+            <button class="small-action auth-switch" id="auth-mode-toggle" type="button">J’ai un code d’invitation</button>
+          </div>
+          <div class="account-card" id="account-controls" hidden>
+            <p id="account-summary"></p>
+            <p class="sync-warning" id="sync-warning" hidden></p>
+            <div class="account-actions">
+              <button class="button button-quiet" id="invite-create" type="button" hidden>Créer un code d’invitation</button>
+              <button class="button button-quiet" id="import-local" type="button" hidden>Importer les tableaux de cet appareil</button>
+              <button class="button button-quiet" id="publish-local-copy" type="button" hidden>Publier ma copie locale</button>
+              <button class="button button-quiet" id="reload-shared-copy" type="button" hidden>Recharger la copie serveur</button>
+              <button class="button button-quiet" id="logout-button" type="button">Se déconnecter</button>
+            </div>
+            <label class="invite-display" id="invite-display" hidden>Code à transmettre aux membres<input id="invite-code" readonly /><button class="small-action" id="invite-copy" type="button">Copier le code</button></label>
+          </div>
+        </section>
+        <section class="team-section">
+          <div class="section-title-row"><h3>Membres</h3><button class="small-action" id="add-member-toggle" type="button">＋ Ajouter</button></div>
+          <form class="inline-form" id="member-form" hidden>
+            <label>Nom<input name="name" required maxlength="40" placeholder="Nom du membre" /></label>
+            <label>Rôle<input name="role" required maxlength="32" placeholder="ex. Développeur" /></label>
+            <label>Couleur<input name="color" type="color" value="#d7f36a" aria-label="Couleur du membre" /></label>
+            <button class="button button-dark" type="submit">Ajouter le membre</button>
+          </form>
+          <div class="member-list" id="member-list"></div>
+        </section>
+        <section class="team-section task-section">
+          <div class="section-title-row"><h3>Tâches</h3><button class="small-action" id="add-task-toggle" type="button">＋ Nouvelle tâche</button></div>
+          <div class="task-filter" role="group" aria-label="Filtrer les tâches">
+            <button class="filter-chip is-active" data-filter="all" type="button">Tout</button>
+            <button class="filter-chip" data-filter="doing" type="button">En cours</button>
+            <button class="filter-chip" data-filter="done" type="button">Terminées</button>
+          </div>
+          <form class="inline-form" id="task-form" hidden>
+            <label>Tâche<input name="title" required maxlength="100" placeholder="Qu’est-ce qu’il faut faire ?" /></label>
+            <label>Assigner à<select name="assignee"></select></label>
+            <button class="button button-dark" type="submit">Créer sur ce tableau</button>
+          </form>
+          <div class="task-list" id="task-list"></div>
+        </section>
+        <footer class="panel-foot">Les profils et tâches restent sur cet appareil.</footer>
+      </aside>
+    </div>
+
+    <dialog class="info-dialog" id="info-dialog">
+      <div class="dialog-top"><span class="dialog-kicker">PIXELBOARD</span>      <button class="icon-button dialog-close" id="dialog-dismiss" type="button" aria-label="Fermer">×</button></div>
+      <h2 id="dialog-title">Un tableau, à vous.</h2>
+      <p id="dialog-copy"></p><div class="dialog-note" id="dialog-note" hidden></div>
+      <div class="dialog-actions">
+        <button class="button button-quiet" id="dialog-close" type="button">Fermer</button>
+        <button class="button button-quiet dialog-done" id="dialog-done" type="button">Compris</button>
+        <button class="button button-dark dialog-confirm" id="dialog-confirm" type="button" hidden>Confirmer</button>
+      </div>
+    </dialog>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
