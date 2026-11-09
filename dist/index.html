@@ -7,8 +7,8 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="description" content="Un espace visuel local pour organiser idées, images, tableaux et tâches d’équipe." />
     <title>PixelBoard — Atelier d’idées</title>
-    <script type="module" crossorigin src="/assets/index-CwP68rMc.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-1IqZ1-UV.css">
+    <script type="module" crossorigin src="/assets/index-BKdULRN7.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BM9sihwE.css">
   </head>
   <body class="auth-locked">
     <main class="login-page" id="login-page" aria-labelledby="login-page-title">
@@ -261,8 +261,16 @@
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <aside id="items-panel" class="items-panel" aria-label="Catalogue d’items Unity" hidden>
       <header class="items-heading"><h2>Items Unity</h2><button id="items-close" type="button" class="small-action">Fermer</button></header>
-      <p>Un catalogue central, des cartes liées dans vos tableaux.</p>
-      <div class="items-project-controls">
+      <p id="items-project-label">Reliez votre projet une seule fois pour retrouver ses items ici.</p>
+      <div class="items-actions items-primary-actions">
+        <button id="items-refresh" type="button" class="button button-dark">Synchroniser avec Unity</button>
+        <button id="items-import" type="button" class="small-action" hidden>Envoyer la fiche vers Unity</button>
+      </div>
+      <p class="items-sync-help">Unity → site. Pour récupérer les nouveautés, gardez Unity et sa fenêtre PixelBoard ouverts.</p>
+      <p id="items-status" role="status" aria-live="polite"></p>
+      <details id="items-setup" class="items-advanced">
+        <summary>Configurer / changer de projet</summary>
+        <div class="items-project-controls">
         <label>Identifiant du projet (affiché dans Unity)<input id="items-project" maxlength="60" autocomplete="off" /></label>
         <button id="items-load" type="button" class="small-action">Charger le projet</button>
         <details id="items-pair-controls" hidden>
@@ -272,15 +280,18 @@
           <label>Code temporaire à saisir dans Unity<input id="items-pair-code" readonly hidden autocomplete="off" /></label>
           <button id="items-revoke" type="button" class="small-action">Révoquer la liaison</button>
         </details>
-      </div>
-      <p id="items-status" role="status" aria-live="polite"></p>
-      <div class="items-actions">
-        <button id="items-refresh" type="button" class="small-action">Vérifier les champs Unity</button>
-        <button id="items-read" type="button" class="small-action">Comparer les assets Unity</button>
-        <button id="items-import" type="button" class="small-action" hidden>Importer la fiche sélectionnée dans Unity</button>
-        <button id="items-import-all" type="button" class="small-action" hidden>Importer le catalogue dans Unity</button>
-        <button id="items-jobs" type="button" class="small-action">Actualiser / voir les demandes</button>
-      </div>
+        </div>
+      </details>
+      <details id="items-advanced" class="items-advanced">
+        <summary>Détails de synchronisation</summary>
+        <p id="items-last-sync"></p>
+        <div class="items-actions">
+          <button id="items-read" type="button" class="small-action">Comparer le dernier instantané</button>
+          <button id="items-import-all" type="button" class="small-action" hidden>Envoyer tout le catalogue vers Unity</button>
+          <button id="items-jobs" type="button" class="small-action">Voir les demandes</button>
+        </div>
+        <div id="items-job-list"></div>
+      </details>
       <div id="items-content"></div>
     </aside>
   </body>

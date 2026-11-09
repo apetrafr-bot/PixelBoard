@@ -1,4 +1,5 @@
 import { ITEM_TYPES, catalogueId, newCatalogue, fieldDefault, defaults, schemaChanges, migrateValues, snapshotMerge, itemSyncState, assetKey } from "./items-model.js";
+import { createUnityPullSync } from "./items-sync.js";
 
 const stateLabels = { archived: "Archivé", offline: "Unity indisponible", schema: "Champs à vérifier", new: "À créer", missing: "Asset manquant", conflict: "Conflit Unity", synced: "Synchronisé", modified: "Modifié ici" };
 const node = (tag, text, className) => {
@@ -29,6 +30,7 @@ export function initItemsUI(host) {
   let lastFocus = null;
   let generation = 0;
   let sessionId = host.session()?.id;
+  let conflicts = [];
   const say = (text) => { status.textContent = text; };
   const catalogue = () => host.records().find((record) => record.id === catalogueId(projectId));
   const owner = () => host.session()?.role === "owner";
@@ -57,10 +59,47 @@ export function initItemsUI(host) {
     remote = null;
     content.replaceChildren();
     remote = await request("unity-state", { query: `&project_id=${encodeURIComponent(projectId)}` });
-    say(remote.project.published_at ? `Dernier instantané Unity : ${remote.project.published_at} (UTC).` : "Ouvrez Unity et publiez ses champs et assets.");
+    document.querySelector("#items-project-label").textContent = remote.project.name;
+    document.querySelector("#items-last-sync").textContent = remote.project.published_at ? `Dernier instantané Unity : ${remote.project.published_at} (UTC).` : "Aucun instantané publié.";
+    say("Projet chargé. Synchronisez pour récupérer les nouveautés de Unity.");
     render();
   };
   const confirm = (title, text, action) => host.confirm(title, text, action);
+  const pull = createUnityPullSync({
+    request: (id) => call("request", { request_id: id, kind: "refresh", item_ids: [] }),
+    read: () => request("unity-state", { query: `&project_id=${encodeURIComponent(projectId)}` }),
+    merge: async (state) => {
+      remote = state;
+      await mergeSnapshot();
+    },
+    status: say,
+  });
+  const synchronize = async () => {
+    if (draft) throw new Error("Enregistrez puis fermez la fiche avant de synchroniser; votre brouillon est conservé.");
+    if (!projectId) {
+      document.querySelector("#items-setup").open = true;
+      throw new Error("Configurez d’abord la liaison avec votre projet Unity.");
+    }
+    const current = generation;
+    const control = document.querySelector("#items-refresh");
+    control.disabled = true;
+    control.textContent = "Synchronisation en attente…";
+    content.inert = true;
+    try { await pull.synchronize(); }
+    finally {
+      if (current === generation) {
+        control.disabled = false;
+        control.textContent = pull.pending ? "Vérifier la synchronisation" : "Synchroniser avec Unity";
+        content.inert = false;
+      }
+    }
+  };
+  async function loadProject() {
+    await refresh();
+    document.querySelector("#items-setup").open = false;
+    pull.resume(remote.jobs?.find((job) => job.kind === "refresh" && ["queued", "claimed"].includes(job.state)));
+    if (pull.pending && !draft) await synchronize();
+  }
 
   function renderField(field, value, change, snapshot, level = 0) {
     const wrapper = node("div", undefined, "item-field");
@@ -184,21 +223,19 @@ export function initItemsUI(host) {
     document.querySelector("#items-import").hidden = !owner();
     document.querySelector("#items-import-all").hidden = !owner();
     const snapshot = remote?.snapshot;
+    renderConflicts();
     if (!snapshot) {
-      content.append(node("p", "Liez votre projet Unity puis publiez ses champs depuis l’Editor. Aucun champ de jeu n’est deviné par le site."));
+      content.append(node("p", "Cliquez sur « Synchroniser avec Unity » pour récupérer les items du projet."));
       return;
     }
     let record = catalogue();
     if (!record) {
-      content.append(button("Créer le catalogue avec les assets Unity", () => run(async () => {
-        const merged = snapshotMerge(newCatalogue(projectId, snapshot), snapshot, crypto.randomUUID.bind(crypto));
-        await save(merged.catalogue); render();
-      })));
+      content.append(node("p", "Votre catalogue sera créé lors de la synchronisation."));
       return;
     }
     if (record.schemaHash !== snapshot.schema_hash) {
       const warning = node("details", undefined, "item-warning");
-      warning.open = true;
+      warning.open = false;
       warning.append(node("summary", "Les champs Unity ont changé : vérifier avant import"));
       const diff = schemaChanges(record.schema || { families: [] }, snapshot.schema);
       warning.append(node("pre", diff.join("\n") || "Métadonnées ou valeurs initiales modifiées."));
@@ -318,25 +355,37 @@ export function initItemsUI(host) {
   async function importSnapshot() {
     if (draft) throw new Error("Fermez la fiche avant de comparer l’instantané Unity.");
     await refresh();
+    await mergeSnapshot();
+  }
+
+  async function mergeSnapshot() {
     if (!remote.snapshot) throw new Error("Aucun instantané Unity disponible.");
     const current = catalogue() || newCatalogue(projectId, remote.snapshot);
     const merged = snapshotMerge(current, remote.snapshot, crypto.randomUUID.bind(crypto));
-    await save(merged.catalogue); render();
-    if (!merged.conflicts.length) { say("Assets Unity ajoutés sans doublon."); return; }
-    const conflicts = node("section", undefined, "item-warning");
-    conflicts.append(node("h3", "Versions différentes : choix requis"));
-    merged.conflicts.forEach(({ id, current: before, unity }) => {
+    if (JSON.stringify(current) !== JSON.stringify(merged.catalogue) || !catalogue()) await save(merged.catalogue);
+    conflicts = merged.conflicts;
+    render();
+    document.querySelector("#items-last-sync").textContent = `Dernier instantané Unity : ${remote.project.published_at} (UTC).`;
+    say(conflicts.length ? `Données reçues de Unity. ${conflicts.length} conflit(s) à vérifier; vos versions du site sont conservées.`
+      : "Synchronisation terminée : les items de Unity sont disponibles ici.");
+  }
+
+  function renderConflicts() {
+    if (!conflicts.length) return;
+    const section = node("section", undefined, "item-warning");
+    section.append(node("h3", "Versions différentes : choix requis"));
+    conflicts.forEach(({ id, current: before, unity }) => {
       const details = node("details");
       details.append(node("summary", before.name), node("p", "Version du site conservée par défaut."),
         node("pre", `SITE\n${JSON.stringify(before.values, null, 2)}\nUNITY\n${JSON.stringify(unity.values, null, 2)}`),
         button("Remplacer cette fiche par Unity", () => confirm("Remplacer la fiche ?", "La version Unity affichée remplacera cette fiche du catalogue. Vous pouvez exporter l’espace avant de continuer.", () => run(async () => {
-          const updated = snapshotMerge(catalogue(), remote.snapshot, crypto.randomUUID.bind(crypto), new Set([id]));
-          await save(updated.catalogue); details.remove(); say("Fiche actualisée depuis Unity.");
+          if (draft) throw new Error("Fermez la fiche avant de remplacer sa version.");
+          const updated = snapshotMerge(catalogue(), { ...remote.snapshot, items: [unity] }, crypto.randomUUID.bind(crypto), new Set([id]));
+          await save(updated.catalogue); conflicts = conflicts.filter((entry) => entry.id !== id); render(); say("Fiche actualisée depuis Unity.");
         }))));
-      conflicts.append(details);
+      section.append(details);
     });
-    content.prepend(conflicts);
-    say(`${merged.conflicts.length} conflit(s) conservé(s) pour comparaison.`);
+    content.append(section);
   }
 
   async function queue(kind, all = false) {
@@ -355,41 +404,42 @@ export function initItemsUI(host) {
       await refresh();
     });
     // Let run() release its guard before the confirmation invokes send().
-    if (kind === "import") confirm("Autoriser cet import Unity ?", `${items.length} fiche(s) seront figées dans cette demande. Les modifications ultérieures ne changeront pas cet import. Une confirmation dans Unity reste obligatoire.`, send);
-    else {
-      if (requestKey?.signature !== kind) requestKey = { signature: kind, id: crypto.randomUUID() };
-      const result = await call("request", { request_id: requestKey.id, kind, item_ids: [] });
-      requestKey = null; await refresh(); say(`Vérification en attente (${result.job_id}). Ouvrez Unity.`);
-    }
+    confirm("Autoriser cet import Unity ?", `${items.length} fiche(s) seront figées dans cette demande. Les modifications ultérieures ne changeront pas cet import. Une confirmation dans Unity reste obligatoire.`, send);
   }
 
+  function closePanel() { pull.stop(); panel.hidden = true; lastFocus?.focus(); }
   document.querySelector("#items-open").addEventListener("click", () => {
     lastFocus = document.activeElement;
+    if (!panel.hidden) { closePanel(); return; }
     panel.hidden = !panel.hidden;
     if (!panel.hidden) {
       const known = host.records().filter((record) => record.recordType === "item-catalogue");
-      if (!projectInput.value && known[0]) projectInput.value = known[0].projectId;
-      projectInput.focus();
+      if (!projectId && known[0]) { projectInput.value = known[0].projectId; projectId = known[0].projectId; }
+      if (projectId) run(loadProject);
+      else { document.querySelector("#items-setup").open = true; projectInput.focus(); }
       document.querySelector("#items-pair-controls").hidden = !owner();
     }
   });
-  document.querySelector("#items-close").addEventListener("click", () => { panel.hidden = true; lastFocus?.focus(); });
+  document.querySelector("#items-close").addEventListener("click", closePanel);
   panel.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { event.stopPropagation(); panel.hidden = true; lastFocus?.focus(); }
+    if (event.key === "Escape") { event.stopPropagation(); closePanel(); }
   });
   document.querySelector("#items-load").addEventListener("click", () => run(async () => {
     if (draft) throw new Error("Enregistrez ou abandonnez la fiche ouverte avant de charger un projet.");
-    projectId = projectInput.value.trim();
-    if (!/^[a-zA-Z0-9_-]{1,60}$/.test(projectId)) throw new Error("Copiez l’identifiant du projet affiché dans Unity.");
+    const next = projectInput.value.trim();
+    if (!/^[a-zA-Z0-9_-]{1,60}$/.test(next)) throw new Error("Copiez l’identifiant du projet affiché dans Unity.");
+    if (next !== projectId) { pull.reset(); conflicts = []; }
+    projectId = next;
     document.querySelector("#items-pair-code").value = "";
     document.querySelector("#items-pair-code").hidden = true;
-    selectedId = null; await refresh();
+    selectedId = null; await loadProject();
   }));
   document.querySelector("#items-pair").addEventListener("click", () => run(async () => {
     if (!owner()) throw new Error("Appairage réservé à l’administrateur.");
     if (draft) throw new Error("Enregistrez ou abandonnez la fiche ouverte avant de changer la liaison.");
     projectId = projectInput.value.trim();
     if (!/^[a-zA-Z0-9_-]{1,60}$/.test(projectId)) throw new Error("Copiez l’identifiant du projet affiché dans Unity.");
+    pull.reset(); conflicts = [];
     const result = await call("pair-create", { project_name: document.querySelector("#items-project-name").value.trim() });
     selectedId = null;
     await refresh();
@@ -399,7 +449,7 @@ export function initItemsUI(host) {
     setTimeout(() => { output.value = ""; output.hidden = true; }, 600000);
   }));
   document.querySelector("#items-revoke").addEventListener("click", () => confirm("Révoquer la liaison ?", "Le jeton Unity et les demandes actives seront annulés.", () => run(async () => { await call("revoke", {}); await refresh(); say("Liaison révoquée."); })));
-  document.querySelector("#items-refresh").addEventListener("click", () => run(() => queue("refresh")));
+  document.querySelector("#items-refresh").addEventListener("click", () => run(synchronize));
   document.querySelector("#items-read").addEventListener("click", () => run(importSnapshot));
   document.querySelector("#items-import").addEventListener("click", () => run(() => queue("import")));
   document.querySelector("#items-import-all").addEventListener("click", () => run(() => queue("import", true)));
@@ -416,11 +466,13 @@ export function initItemsUI(host) {
       })));
       jobs.append(details);
     });
-    content.prepend(jobs);
+    document.querySelector("#items-job-list").replaceChildren(jobs);
   }));
   return {
     setBlocked(value) { panel.inert = value; },
     openItem(project, id) {
+      if (busy) { say("Attendez la fin de la synchronisation avant d’ouvrir une fiche."); return; }
+      if (project !== projectId) { pull.reset(); conflicts = []; }
       projectInput.value = project; projectId = project; selectedId = id; draft = null;
       panel.hidden = false;
       run(refresh);
@@ -432,9 +484,16 @@ export function initItemsUI(host) {
       if (!host.session() || host.session().id !== sessionId) {
         sessionId = host.session()?.id;
         generation++;
+        pull.reset(); conflicts = [];
         busy = false; panel.setAttribute("aria-busy", "false");
         panel.hidden = true; content.replaceChildren(); remote = null; draft = null; selectedId = null; projectId = "";
         projectInput.value = ""; say("");
+        document.querySelector("#items-project-label").textContent = "Reliez votre projet une seule fois pour retrouver ses items ici.";
+        document.querySelector("#items-last-sync").textContent = "";
+        document.querySelector("#items-job-list").replaceChildren();
+        document.querySelector("#items-refresh").disabled = false;
+        document.querySelector("#items-refresh").textContent = "Synchroniser avec Unity";
+        content.inert = false;
         requestKey = null;
         document.querySelector("#items-pair-code").value = "";
         document.querySelector("#items-pair-code").hidden = true;

@@ -273,6 +273,11 @@ body.auth-locked .app-shell { display: none; }
 .items-panel .small-action { min-height: 32px; text-align: left; white-space: normal; font-size: 12px; }
 .items-project-controls, .item-editor { display: grid; gap: 12px; }
 .items-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 0; }
+.items-primary-actions { align-items: center; padding-bottom: 4px; }
+.items-sync-help { margin-top: 4px; color: #456050; font-size: 12px; }
+.items-advanced { padding: 10px 0; border-top: 1px solid #cbd2b6; }
+.items-advanced > .items-project-controls { padding-top: 12px; }
+.items-primary-actions > button:disabled { opacity: .65; cursor: wait; }
 .items-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 0; }
 .items-filters > input { grid-column: 1 / -1; }
 .items-list { max-height: 260px; overflow: auto; border-block: 1px solid #cbd2b6; }
