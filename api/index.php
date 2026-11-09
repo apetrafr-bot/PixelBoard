@@ -174,6 +174,9 @@ try {
     $method = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
     if ($action === 'setup' && $method === 'POST') {
+        if (empty($_SERVER['HTTPS']) || $_SERVER['HTTPS'] === 'off') {
+            pixelboard_fail(403, 'Utilisez HTTPS pour initialiser le propriétaire.');
+        }
         $providedSecret = (string) ($_SERVER['HTTP_X_SETUP_SECRET'] ?? '');
         if (!pixelboard_csrf_matches((string) $config['setup_secret'], $providedSecret)) {
             pixelboard_fail(403, 'Secret d’installation incorrect.');
@@ -191,7 +194,8 @@ try {
         try {
             $setupState = $db->query("SELECT initialized FROM system_state WHERE state_key = 'owner_bootstrap' FOR UPDATE")->fetchColumn();
             if ($setupState === false || (int) $setupState !== 0
-                || (int) $db->query('SELECT COUNT(*) FROM workspaces')->fetchColumn() !== 0) {
+                || (int) $db->query('SELECT COUNT(*) FROM workspaces')->fetchColumn() !== 0
+                || (int) $db->query('SELECT COUNT(*) FROM users')->fetchColumn() !== 0) {
                 $db->rollBack();
                 pixelboard_fail(409, 'L’espace est déjà initialisé. Utilisez une invitation pour ajouter des membres.');
             }
@@ -214,7 +218,11 @@ try {
         $csrf = $_SESSION['csrf_token'] ?? pixelboard_new_csrf();
         $user = isset($_SESSION['user_id']) ? pixelboard_public_user($db, (int) $_SESSION['user_id']) : null;
         $workspace = $user ? pixelboard_workspace($db, (int) $user['workspace_id']) : null;
-        pixelboard_reply(200, ['user' => $user, 'workspace' => $workspace, 'csrf' => $csrf]);
+        $setupState = $db->query("SELECT initialized FROM system_state WHERE state_key = 'owner_bootstrap'")->fetchColumn();
+        $setupAvailable = $setupState !== false && (int) $setupState === 0
+            && (int) $db->query('SELECT COUNT(*) FROM workspaces')->fetchColumn() === 0
+            && (int) $db->query('SELECT COUNT(*) FROM users')->fetchColumn() === 0;
+        pixelboard_reply(200, ['user' => $user, 'workspace' => $workspace, 'csrf' => $csrf, 'setup_available' => $setupAvailable]);
     }
 
     if ($action === 'register' && $method === 'POST') {

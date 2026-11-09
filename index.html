@@ -136,9 +136,23 @@
             <details class="account-setup" id="account-setup">
               <summary>Propriétaire : activer les comptes sur Hostinger</summary>
               <p>Publiez tout le contenu de dist, y compris api. Dans pixelboard-config.php, à côté de public_html, renseignez la base MySQL et le secret privé à partir de api/config.example.php. Importez api/schema.sql via phpMyAdmin seulement pour une base vide.</p>
-              <p>Créez ensuite votre compte administrateur avec la requête setup protégée décrite dans le README. Ne saisissez jamais le secret ici. Une inscription avec invitation crée uniquement un membre.</p>
+              <p>Une fois le serveur configuré, le formulaire de première installation apparaît ci-dessous. Il demande votre secret d’installation privé pour créer un seul administrateur. Une inscription avec invitation crée uniquement un membre.</p>
               <a href="https://github.com/pandaroux9999/PixelBoard#préparer-lhébergement-hostinger" target="_blank" rel="noopener noreferrer">Lire le guide Hostinger du dépôt privé</a>
             </details>
+            <section id="owner-setup" hidden aria-labelledby="owner-setup-heading">
+              <h3 id="owner-setup-heading">Créer mon compte administrateur</h3>
+              <p>Première installation uniquement. Ce formulaire disparaît après la création du propriétaire. Aucun code d’invitation nécessaire.</p>
+              <form class="inline-form" id="owner-setup-form">
+                <label>Nom de l’équipe<input name="workspace" required maxlength="120" autocomplete="organization" /></label>
+                <label>Votre nom<input name="name" required maxlength="80" autocomplete="name" /></label>
+                <label>Adresse e-mail<input name="email" type="email" required maxlength="254" autocomplete="email" /></label>
+                <label>Mot de passe (12 caractères minimum)<input name="password" type="password" required minlength="12" maxlength="4096" autocomplete="new-password" /></label>
+                <label>Secret d’installation<input name="setup_secret" type="password" required minlength="32" autocomplete="off" /></label>
+                <p>Recopiez le setup_secret de votre fichier privé Hostinger. Il autorise cette opération, mais ne sera pas votre mot de passe de connexion.</p>
+                <button class="button button-dark" type="submit">Créer mon compte administrateur</button>
+              </form>
+              <p id="owner-setup-status" role="status" aria-live="polite"></p>
+            </section>
             <form class="inline-form" id="login-form">
               <label>Adresse e-mail<input name="email" type="email" autocomplete="email" required maxlength="254" /></label>
               <label>Mot de passe<input name="password" type="password" autocomplete="current-password" required minlength="12" /></label>

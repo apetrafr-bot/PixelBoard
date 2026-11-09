@@ -59,6 +59,8 @@ let remoteSyncTimer;
 let remoteWritesInFlight = 0;
 let registerMode = false;
 let inviteCodeValue = "";
+let setupAvailable = false;
+let setupBusy = false;
 
 const newId = () => crypto.randomUUID();
 
@@ -1831,6 +1833,46 @@ function renderTeam() {
   renderTasks();
 }
 
+async function submitOwnerSetup(event) {
+  event.preventDefault();
+  if (setupBusy || !setupAvailable || apiState !== "ready") return;
+  const form = event.currentTarget;
+  const status = $("#owner-setup-status");
+  if (location.protocol !== "https:") {
+    status.textContent = "Ouvrez le site en HTTPS avant de saisir votre secret d’installation.";
+    return;
+  }
+  const values = Object.fromEntries(new FormData(form).entries());
+  const secret = values.setup_secret;
+  delete values.setup_secret;
+  setupBusy = true;
+  status.textContent = "Création du compte administrateur…";
+  renderAuthControls();
+  try {
+    await apiRequest("setup", { method: "POST", headers: { "X-Setup-Secret": secret }, body: values });
+    setupAvailable = false;
+    registerMode = false;
+    $("#login-form").elements.email.value = values.email;
+    form.reset();
+    showToast("Compte administrateur créé. Connectez-vous avec votre adresse e-mail et votre mot de passe.");
+  } catch (error) {
+    status.textContent = error.message;
+    try {
+      const auth = await apiRequest("auth");
+      setupAvailable = auth.setup_available === true;
+      if (!setupAvailable) showToast("Installation déjà terminée. Connectez-vous avec votre compte.");
+    } catch {
+      status.textContent += " Impossible de vérifier l’état du serveur. Rechargez la page avant de réessayer.";
+    }
+  } finally {
+    form.elements.setup_secret.value = "";
+    form.elements.password.value = "";
+    delete values.password;
+    setupBusy = false;
+    renderAuthControls();
+  }
+}
+
 function renderAuthControls() {
   const section = $("#auth-section");
   section.hidden = false;
@@ -1843,16 +1885,21 @@ function renderAuthControls() {
   entry.setAttribute("aria-label", remoteSession ? "Ouvrir mon compte" : "Connexion et création de compte");
   entry.title = entry.getAttribute("aria-label");
   $("#account-setup").open = apiState === "missing" || apiState === "error";
+  const showSetup = !remoteSession && apiState === "ready" && setupAvailable;
+  $("#owner-setup").hidden = !showSetup;
+  $("#owner-setup-form").querySelectorAll("input,button").forEach((input) => { input.disabled = setupBusy || !showSetup; });
   $("#auth-description").textContent = apiState === "error"
     ? `Serveur équipe indisponible : ${apiMessage} Vérifiez pixelboard-config.php à côté de public_html et la base MySQL, puis rechargez cette page. Vos données restent locales.`
     : apiState === "missing"
       ? "API PHP absente : publiez aussi le dossier dist/api dans public_html/api sur Hostinger, puis rechargez cette page. Les comptes et le partage ne sont pas actifs; vos données restent locales."
       : apiState === "checking"
         ? "Vérification du serveur de comptes…"
-        : "Connectez-vous avec votre compte ou créez-en un avec le code transmis par le propriétaire.";
-  $("#login-form").hidden = registerMode;
-  $("#register-form").hidden = !registerMode;
-  $("#auth-heading").textContent = registerMode ? "Créer un compte membre" : "Accéder à l’espace partagé";
+        : showSetup ? "Le serveur est prêt. Créez votre premier compte administrateur ci-dessous."
+          : "Connectez-vous avec votre compte ou créez-en un avec le code transmis par le propriétaire.";
+  $("#login-form").hidden = showSetup || registerMode;
+  $("#register-form").hidden = showSetup || !registerMode;
+  $("#auth-mode-toggle").hidden = showSetup;
+  $("#auth-heading").textContent = showSetup ? "Première installation" : registerMode ? "Créer un compte membre" : "Accéder à l’espace partagé";
   $("#auth-mode-toggle").textContent = registerMode ? "J’ai déjà un compte" : "Créer un compte avec une invitation";
   $("#account-summary").textContent = remoteSession
     ? `${remoteSession.name} · ${remoteSession.email} · ${remoteSession.workspace}`
@@ -2212,6 +2259,7 @@ function initEvents() {
   $("#task-form").addEventListener("submit", addTaskFromForm);
   $("#login-form").addEventListener("submit", (event) => submitAccountForm(event, "login"));
   $("#register-form").addEventListener("submit", (event) => submitAccountForm(event, "register"));
+  $("#owner-setup-form").addEventListener("submit", submitOwnerSetup);
   $("#auth-mode-toggle").addEventListener("click", () => { registerMode = !registerMode; renderAuthControls(); });
   $("#logout-button").addEventListener("click", signOutAccount);
   $("#invite-create").addEventListener("click", createInviteCode);
@@ -2382,6 +2430,7 @@ async function start() {
     await writeRecords([board, { id: WORKSPACE_ID, members }]);
     try {
       const auth = await apiRequest("auth");
+      setupAvailable = auth.setup_available === true;
       apiReady = true;
       apiState = "ready";
       if (auth.user) await loadRemoteWorkspace(auth, records);
