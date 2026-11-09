@@ -365,12 +365,11 @@ try {
 
     if ($action === 'backup' && in_array($method, ['GET', 'POST'], true)) {
         pixelboard_require_owner($user);
-        // Existing sites remain usable until the additive migration is installed.
         $table = $db->query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workspace_backups'")->fetchColumn();
-        if ($table === false) {
-            pixelboard_fail(503, 'Protection non installée : importez uniquement api/migration-backups.sql dans la base existante.');
-        }
         if ($method === 'GET') {
+            if ($table === false) {
+                pixelboard_reply(200, ['backups' => [], 'installed' => false]);
+            }
             $query = $db->prepare('SELECT slot, revision, saved_at FROM workspace_backups WHERE workspace_id = ?');
             $query->execute([$workspaceId]);
             pixelboard_reply(200, ['backups' => $query->fetchAll()]);
@@ -383,6 +382,18 @@ try {
             || !in_array($slot, ['approved', 'before_restore'], true)
             || !is_array($input['versions'] ?? null)) {
             pixelboard_fail(422, 'Demande de sauvegarde invalide.');
+        }
+        if ($table === false) {
+            try {
+                pixelboard_install_backups($db);
+            } catch (Throwable $error) {
+                $reference = pixelboard_log_failure(dirname(__DIR__, 2) . '/pixelboard-private-logs', 'BACKUP_INSTALL', $error);
+                pixelboard_reply(503, [
+                    'error' => 'Création automatique de la protection impossible. Vérifiez le droit CREATE du compte MySQL, ou importez api/migration-backups.sql via phpMyAdmin.',
+                    'diagnostic' => 'BACKUP_INSTALL',
+                    'reference' => $reference,
+                ]);
+            }
         }
         $db->beginTransaction();
         try {

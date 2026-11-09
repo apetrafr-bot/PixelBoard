@@ -103,7 +103,7 @@ Les cartes tâches utilisent le même affichage léger que les listes : une case
 
 ### Version de travail et copie protégée administrateur
 
-Pour une base existante, importez **une seule fois `api/migration-backups.sql` dans phpMyAdmin**, puis publiez le nouveau `dist` (interface et API). Ne réimportez pas `schema.sql` sur une base existante. Sans cette migration, le site et les comptes restent utilisables; les boutons de protection affichent une erreur explicite. Pour une base neuve, la table est incluse dans `schema.sql`.
+Publiez le nouveau `dist` (interface et API). La table de protection est créée automatiquement lors de la première validation administrateur, après contrôle de session, du rôle et du jeton CSRF. Cette création additive ne remplace aucune table existante et exige le droit MySQL `CREATE`. Si l’hébergement refuse ce droit, une erreur `BACKUP_INSTALL` l’indique; l’import unique de `api/migration-backups.sql` via phpMyAdmin reste une solution de secours. Ne réimportez pas `schema.sql` sur une base existante. Pour une base neuve, la table est déjà incluse dans `schema.sql`.
 
 Dans **Mon compte → Copie protégée administrateur**, le propriétaire dispose de :
 

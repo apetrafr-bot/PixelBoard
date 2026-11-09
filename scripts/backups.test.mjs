@@ -106,6 +106,8 @@ test("API backup route enforces owner, CSRF, workspace isolation and shared tran
   const route = api.slice(api.indexOf("if ($action === 'backup'"), api.indexOf("if ($action === 'boards'"));
   assert.ok(route.indexOf("pixelboard_require_owner($user)") < route.indexOf("$method === 'GET'"));
   assert.ok(route.indexOf("pixelboard_require_csrf()") < route.indexOf("$db->beginTransaction()"));
+  assert.ok(route.indexOf("pixelboard_require_csrf()") < route.indexOf("pixelboard_install_backups($db)"));
+  assert.match(route, /'backups' => \[\], 'installed' => false/);
   assert.match(route, /WHERE workspace_id = \? AND slot = \? FOR UPDATE/);
   assert.match(route, /pixelboard_backup_versions_match/);
   assert.match(route, /pixelboard_valid_backup_records/);
@@ -114,4 +116,13 @@ test("API backup route enforces owner, CSRF, workspace isolation and shared tran
   const normalWrite = api.slice(api.indexOf("if ($action === 'board' && $method === 'PUT')"));
   assert.match(normalWrite, /SELECT id FROM workspaces WHERE id = \? FOR UPDATE/);
   assert.doesNotMatch(normalWrite, /UPDATE workspace_backups|INSERT INTO workspace_backups/);
+});
+
+test("backup auto-install is additive and idempotent and matches the manual schema", async () => {
+  const lib = await readFile(new URL("../api/lib.php", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../api/migration-backups.sql", import.meta.url), "utf8");
+  const sql = lib.match(/\$db->exec\("(CREATE TABLE IF NOT EXISTS workspace_backups[\s\S]*?)"\);/)[1];
+  const normalize = (value) => value.replace(/IF NOT EXISTS /, "").replace(/;\s*$/, "").replace(/\s+/g, " ").trim();
+  assert.equal(normalize(sql), normalize(migration));
+  assert.doesNotMatch(sql, /\b(DROP TABLE|DELETE FROM|TRUNCATE|ALTER TABLE)\b/i);
 });

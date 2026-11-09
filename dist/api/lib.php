@@ -1,6 +1,20 @@
 <?php
 declare(strict_types=1);
 
+function pixelboard_install_backups(PDO $db): void
+{
+    $db->exec("CREATE TABLE IF NOT EXISTS workspace_backups (
+        workspace_id BIGINT UNSIGNED NOT NULL,
+        slot ENUM('approved', 'before_restore') NOT NULL,
+        data LONGTEXT NOT NULL,
+        revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+        saved_by BIGINT UNSIGNED NOT NULL,
+        saved_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (workspace_id, slot),
+        CONSTRAINT backups_workspace_fk FOREIGN KEY (workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+}
+
 function pixelboard_backup_versions_match(array $current, array $expected): bool
 {
     ksort($current);
