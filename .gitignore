@@ -1,3 +1,4 @@
 node_modules/
 .impeccable/hook.cache.json
 api/config.php
+dist/api/config.php

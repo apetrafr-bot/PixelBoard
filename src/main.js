@@ -1827,16 +1827,23 @@ function renderTeam() {
 
 function renderAuthControls() {
   const section = $("#auth-section");
-  section.hidden = apiState === "missing";
+  section.hidden = false;
   const forms = $("#auth-forms");
   const account = $("#account-controls");
-  forms.hidden = Boolean(remoteSession) || apiState === "error";
+  forms.hidden = Boolean(remoteSession);
   account.hidden = !remoteSession;
+  const entry = $("#profile-button");
+  entry.textContent = remoteSession ? "Mon compte" : "Connexion";
+  entry.setAttribute("aria-label", remoteSession ? "Ouvrir mon compte" : "Connexion et création de compte");
+  entry.title = entry.getAttribute("aria-label");
+  $("#account-setup").open = apiState === "missing" || apiState === "error";
   $("#auth-description").textContent = apiState === "error"
-    ? `Serveur équipe indisponible : ${apiMessage} Les données locales restent sur cet appareil.`
-    : remoteSession
-      ? ""
-      : "Connectez-vous avec votre compte ou créez-en un avec le code transmis par le propriétaire.";
+    ? `Serveur équipe indisponible : ${apiMessage} Vérifiez public_html/api/config.php et la base MySQL, puis rechargez cette page. Vos données restent locales.`
+    : apiState === "missing"
+      ? "API PHP absente : publiez aussi le dossier dist/api dans public_html/api sur Hostinger, puis rechargez cette page. Les comptes et le partage ne sont pas actifs; vos données restent locales."
+      : apiState === "checking"
+        ? "Vérification du serveur de comptes…"
+        : "Connectez-vous avec votre compte ou créez-en un avec le code transmis par le propriétaire.";
   $("#login-form").hidden = registerMode;
   $("#register-form").hidden = !registerMode;
   $("#auth-heading").textContent = registerMode ? "Créer un compte membre" : "Accéder à l’espace partagé";

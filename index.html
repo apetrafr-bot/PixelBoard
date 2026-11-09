@@ -84,7 +84,7 @@
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m0 0 3-3m-3 3L7 9M4 13v3h12v-3"/></svg>
                 </button>
                 <button class="icon-button" id="help-button" type="button" aria-label="À propos" title="À propos">?</button>
-                <button class="avatar" id="profile-button" type="button" aria-label="Ouvrir l’équipe et le profil" title="Équipe et profil">P</button>
+                <button class="account-entry" id="profile-button" type="button" aria-label="Connexion et compte" title="Connexion et compte">Connexion</button>
               </div>
             </div>
             <div class="toolbar-secondary">
@@ -129,10 +129,16 @@
           <button class="icon-button" id="team-close" type="button" aria-label="Fermer">×</button>
         </header>
         <p class="local-notice" id="local-notice">Équipe de démonstration enregistrée sur cet appareil. Les invitations et la synchronisation partagée ne sont pas connectées.</p>
-        <section class="auth-section" id="auth-section" aria-label="Compte et espace partagé" hidden>
+        <section class="auth-section" id="auth-section" aria-label="Compte et espace partagé">
           <div class="auth-card" id="auth-forms">
             <h3 id="auth-heading">Accéder à l’espace partagé</h3>
-            <p id="auth-description">Connectez-vous pour retrouver les tableaux de votre équipe.</p>
+            <p id="auth-description" role="status">Vérification du serveur de comptes…</p>
+            <details class="account-setup" id="account-setup">
+              <summary>Propriétaire : activer les comptes sur Hostinger</summary>
+              <p>Publiez tout le contenu de dist, y compris api. Dans public_html/api/config.php, renseignez la base MySQL et le secret privé à partir de api/config.example.php. Importez api/schema.sql via phpMyAdmin.</p>
+              <p>Créez ensuite votre compte administrateur avec la requête setup protégée décrite dans le README. Ne saisissez jamais le secret ici. Une inscription avec invitation crée uniquement un membre.</p>
+              <a href="https://github.com/pandaroux9999/PixelBoard#préparer-lhébergement-hostinger" target="_blank" rel="noopener noreferrer">Lire le guide Hostinger du dépôt privé</a>
+            </details>
             <form class="inline-form" id="login-form">
               <label>Adresse e-mail<input name="email" type="email" autocomplete="email" required maxlength="254" /></label>
               <label>Mot de passe<input name="password" type="password" autocomplete="current-password" required minlength="12" /></label>

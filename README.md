@@ -37,12 +37,22 @@ npm run preview
 
 ## Préparer l’hébergement Hostinger
 
-L’intégration serveur cible un hébergement mutualisé PHP avec PHP 8.1 ou ultérieur, PDO MySQL et une base MySQL/MariaDB. Elle n’est pas encore configurée pour un VPS Node. Aucun dépôt GitHub n’est créé ou publié depuis ce dossier.
+L’intégration serveur cible un hébergement mutualisé PHP avec PHP 8.1 ou ultérieur, PDO MySQL et une base MySQL/MariaDB. Publier uniquement les fichiers statiques ne permet pas de créer des comptes. Le bouton **Connexion** reste visible même sans API : il explique alors ce qui manque. Les données locales ne sont ni effacées ni envoyées automatiquement.
 
 1. Dans Hostinger, créez une base MySQL et un utilisateur avec accès à cette base; activez HTTPS pour le domaine avant d’utiliser l’API. L’API marque le cookie de session `Secure` lorsque PHP détecte HTTPS (`$_SERVER['HTTPS']`). Si un proxy ou une configuration particulière masque cette valeur, vérifiez-la ou corrigez la configuration avant d’ouvrir les comptes; ne transmettez jamais le secret d’installation en HTTP.
 2. Importez `api/schema.sql` dans cette base via phpMyAdmin.
-3. Créez `api/config.php` à partir de `api/config.example.php` avec le DSN, l’utilisateur et le mot de passe MySQL. Remplacez `setup_secret` par un secret aléatoire d’au moins 32 caractères. Ne commitez jamais `api/config.php`; `.gitignore` l’exclut et `api/.htaccess` interdit sa lecture HTTP directe.
-4. Construisez le site avec `npm ci` puis `npm run build`. Publiez le contenu de `dist/` à la racine `public_html/`, et publiez dans `public_html/api/` uniquement `index.php`, `lib.php` et `.htaccess`. Gardez les fichiers SQL, tests et configuration d’exemple dans le dépôt, pas dans le répertoire public. L’API utilise `/api/index.php?action=...` sur la même origine.
+3. Dans le gestionnaire de fichiers Hostinger, créez **`public_html/api/config.php`** en copiant le contenu de **`api/config.example.php`** du dépôt. Remplacez les champs suivants avec les valeurs de votre base Hostinger (pas votre mot de passe de compte Hostinger) :
+
+| Champ dans `config.php` | Valeur à saisir |
+|---|---|
+| `db.dsn` | `mysql:host=HOTE_MYSQL;dbname=NOM_COMPLET_BASE;charset=utf8mb4` : remplacer `HOTE_MYSQL` et `NOM_COMPLET_BASE` par les valeurs Hostinger, préfixes inclus |
+| `db.username` | Nom complet de l’utilisateur MySQL autorisé sur cette base |
+| `db.password` | Mot de passe de cet utilisateur MySQL |
+| `setup_secret` | Votre secret aléatoire privé d’au moins 32 caractères, différent des mots de passe |
+
+Ne commitez jamais ce fichier. `api/config.php` et `dist/api/config.php` sont ignorés par Git; `.htaccess` interdit la lecture HTTP directe de `config.php`. Ne mettez aucune de ces valeurs dans le JavaScript, GitHub ou le formulaire de connexion.
+
+4. Construisez le site avec `npm ci` puis `npm run build`. Le build inclut automatiquement dans **`dist/api/` uniquement `index.php`, `lib.php` et `.htaccess`**. Publiez **tout le contenu** de `dist/` à la racine `public_html/`, dossier `api` et fichier caché `.htaccess` compris. SQL, tests et exemple de configuration ne sont pas copiés dans le build. Le build ne vide pas le dossier de sortie et ne copie jamais `config.php`; une configuration déjà présente est préservée. Au redéploiement, ne supprimez pas `public_html/api/config.php` : configurez votre outil de transfert pour préserver ce fichier (pas de suppression miroir de ce fichier). Le build peut laisser d’anciens assets hachés inutilisés; ne supprimez pas l’ensemble du répertoire serveur pour les nettoyer. L’API utilise `/api/index.php?action=...` sur la même origine.
 5. Initialisez une seule fois le propriétaire depuis un terminal privé, jamais depuis le navigateur, en remplaçant les valeurs fictives :
 
 ```sh
@@ -53,7 +63,13 @@ curl -X POST "https://votre-domaine.example/api/index.php?action=setup" \
 ```
 
 Cette opération est refusée dès qu’un espace existe. Connectez-vous ensuite dans PixelBoard et créez un code d’invitation à transmettre aux membres. Le code reste valable jusqu’à ce qu’un nouveau soit généré; générer un nouveau code invalide le précédent. Transmettez-le uniquement aux membres prévus; l’inscription exige toujours un code.
-6. Pour lier Hostinger à GitHub, poussez vous-même le dépôt vers le dépôt privé souhaité et configurez le déploiement Git dans Hostinger ou une action de déploiement avec ses propres secrets. Le build Vite doit être exécuté avant publication; les fichiers PHP et la configuration serveur doivent être publiés séparément. Ne mettez ni identifiants MySQL ni secret d’installation dans GitHub.
+6. Après votre push, redéployez le contenu du build sur un hébergement exécutant PHP, pas seulement un hébergement statique Node/Vite. La configuration réelle se crée séparément sur Hostinger et reste hors Git. Ne mettez ni identifiants MySQL ni secret d’installation dans GitHub.
+
+### Vérifier l’installation et se connecter comme propriétaire
+
+Ouvrez `https://VOTRE-DOMAINE/api/index.php?action=auth`. Une 404 indique que le dossier API n’est pas publié au bon emplacement. Une réponse JSON 503 indique une configuration absente/incomplète ou MySQL indisponible : vérifiez `public_html/api/config.php`, PDO MySQL et le schéma importé. Une réponse JSON avec `user: null` et `csrf` signifie que l’API est joignable, pas qu’un compte existe.
+
+Exécutez ensuite la requête `setup` de l’étape 5 sur votre domaine HTTPS avec votre secret privé, nom, adresse e-mail et nouveau mot de passe (12 caractères minimum). Elle crée le seul propriétaire initial (administrateur de l’équipe), puis le verrou SQL empêche une nouvelle initialisation. Cliquez sur **Connexion** et utilisez cette adresse e-mail et ce mot de passe. L’inscription publique sur invitation ne donne jamais le rôle propriétaire. Ne supprimez pas le secret de la configuration après installation : le serveur l’utilise aussi pour limiter les tentatives de connexion; c’est le verrou en base qui désactive le setup.
 
 Les images de carte sont envoyées dans le JSON du tableau; le corps API est limité à 64 Mio. Configurez les limites PHP d’hébergement (`post_max_size` et `memory_limit`) en conséquence. La base et le compte Hostinger sont nécessaires avant que la création de compte, la connexion ou la synchronisation partagée puissent fonctionner. Aucun mot de passe réel ni identifiant d’hébergement n’est inclus dans le projet.
 
@@ -63,6 +79,7 @@ Le compte propriétaire est créé via l’étape d’installation; l’inscript
 
 ```sh
 npm run build
+npm test
 php -l api/index.php
 php -l api/lib.php
 php api/tests.php

@@ -124,6 +124,12 @@ textarea:focus-visible, input:focus-visible, select:focus-visible, [data-drag-ha
 .toolbar-primary .save-status.has-error { color: #ffd0c3; }
 .toolbar-primary .avatar { border-color: #d7f36a; background: #d7f36a; color: #203326; }
 .toolbar-primary .avatar:hover { background: #e4ff83; }
+.account-entry { flex: 0 0 auto; min-height: 28px; border: 1px solid #d7f36a; background: #d7f36a; padding: 0 7px; color: #203326; cursor: pointer; font-size: 10px; font-weight: 700; }
+.account-entry:hover { background: #e4ff83; }
+.account-setup { color: #344f40; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.account-setup summary { cursor: pointer; font-weight: 700; }
+.account-setup p { margin: 8px 0; }
+.account-setup a { color: #24543b; text-underline-offset: 3px; }
 .toolbar-primary .icon-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 .canvas-hint { color: #d3e2d7; font-size: 9px; }
 .hint-drag { margin-right: 6px; color: var(--acid); font-size: 13px; }
