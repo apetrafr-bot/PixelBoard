@@ -83,6 +83,10 @@ Dans l'interface, **Membres** est réservé au propriétaire connecté (administ
 
 ## Vérifications
 
+### Retrouver les tableaux partagés
+
+Les comptes doivent appartenir au même espace (inscription via l'invitation du propriétaire). Les tableaux créés hors connexion restent locaux : utilisez **Mon compte → Importer les tableaux de cet appareil** pour en ajouter des copies au serveur. La liste de tableaux dans la barre verte permet d'ouvrir directement tout tableau chargé de l'espace. **Actualiser** récupère les changements partagés; la synchronisation automatique intervient toutes les 15 secondes hors saisie/interaction en cours. **Recentrer** ramène la vue sur les cartes sans les déplacer.
+
 ### Diagnostic PHP sans SSH
 
 Les connexions MySQL distinguent aussi `DATABASE_DRIVER_MISSING` (extension PDO MySQL absente), `DATABASE_AUTH_REJECTED` (authentification refusée), `DATABASE_ACCESS_DENIED` (droits sur la base), `DATABASE_UNKNOWN` (base inconnue), `DATABASE_UNREACHABLE` (serveur inaccessible) et `DATABASE_LIMIT` (limite de connexions/ressources). La classification utilise uniquement les codes numériques MySQL, jamais le message brut contenant potentiellement des identifiants. Un code ne prouve pas à lui seul quelle valeur doit être changée : par exemple, une authentification refusée peut aussi dépendre de l'hôte autorisé pour l'utilisateur.

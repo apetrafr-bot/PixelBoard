@@ -57,6 +57,7 @@ let remoteVersions = new Map();
 let pendingRemoteBoardIds = new Set();
 let remoteSyncTimer;
 let remoteWritesInFlight = 0;
+let remoteSyncInFlight = false;
 let registerMode = false;
 let inviteCodeValue = "";
 let setupAvailable = false;
@@ -248,7 +249,12 @@ async function loadRemoteWorkspace(auth, localRecords) {
 }
 
 async function syncRemoteChanges() {
-  if (!remoteSession || remoteWritesInFlight || saveTimer || canvas.contains(document.activeElement) || teamPanel.contains(document.activeElement)) return;
+  const active = document.activeElement;
+  const editing = active && (canvas.contains(active) || teamPanel.contains(active))
+    && (active.isContentEditable || active.matches("input,textarea,select"));
+  if (!remoteSession || remoteSyncInFlight || remoteWritesInFlight || saveTimer || editing
+      || panGesture || drawingGesture || connectionGesture || connectorResizeGesture) return;
+  remoteSyncInFlight = true;
   try {
     const [boardResponse, memberResponse] = await Promise.all([
       apiRequest("boards"),
@@ -262,7 +268,7 @@ async function syncRemoteChanges() {
       remoteVersions.set(record.id, entry.version);
       boardRecords.set(record.id, structuredClone(record));
       if (board.id === record.id) {
-        board = normalizeBoard(record);
+        board = normalizeBoard({ ...record, zoom: board.zoom, viewX: viewport.scrollLeft, viewY: viewport.scrollTop });
         activeBoardChanged = true;
       }
     }
@@ -275,9 +281,12 @@ async function syncRemoteChanges() {
       viewport.scrollTop = board.viewY;
     }
     renderTeam();
+    renderBoardPicker();
   } catch (error) {
     console.error("Échec de synchronisation avec l’espace partagé.", error);
     setSaveStatus("Sync. interrompue", "has-error");
+  } finally {
+    remoteSyncInFlight = false;
   }
 }
 
@@ -1070,7 +1079,42 @@ function renderBoard() {
   $("#item-count").textContent = `${count} élément${count > 1 ? "s" : ""}`;
   updateZoom();
   renderBreadcrumbs();
+  renderBoardPicker();
   renderTeam();
+}
+
+function renderBoardPicker() {
+  const picker = $("#board-picker");
+  picker.replaceChildren();
+  const records = new Map(boardRecords);
+  records.set(board.id, board);
+  for (const record of records.values()) {
+    const option = document.createElement("option");
+    option.value = record.id;
+    option.textContent = record.title || "Sans titre";
+    picker.append(option);
+  }
+  picker.value = board.id;
+}
+
+function fitBoardContent() {
+  const cards = [...canvas.querySelectorAll(".board-card")];
+  if (!cards.length) {
+    board.zoom = 1;
+    updateZoom();
+    focusWorldPoint(0, 0);
+  } else {
+    const left = Math.min(...cards.map((card) => card.offsetLeft));
+    const top = Math.min(...cards.map((card) => card.offsetTop));
+    const right = Math.max(...cards.map((card) => card.offsetLeft + card.offsetWidth));
+    const bottom = Math.max(...cards.map((card) => card.offsetTop + card.offsetHeight));
+    board.zoom = Math.max(MIN_ZOOM, Math.min(1,
+      Math.max(1, viewport.clientWidth - 80) / Math.max(1, right - left),
+      Math.max(1, viewport.clientHeight - 80) / Math.max(1, bottom - top)));
+    updateZoom();
+    focusWorldPoint((left + right) / 2, (top + bottom) / 2);
+  }
+  updateViewSave();
 }
 
 function updateZoom() {
@@ -2229,20 +2273,14 @@ function initEvents() {
   $("#redo-button").addEventListener("click", handleRedo);
   $("#zoom-in").addEventListener("click", () => adjustZoom(.1));
   $("#zoom-out").addEventListener("click", () => adjustZoom(-.1));
-  $("#fit-board").addEventListener("click", () => {
-    const items = board.items.filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y));
-    if (!items.length) {
-      board.zoom = 1;
-      viewport.scrollLeft = board.originX;
-      viewport.scrollTop = board.originY;
-    } else {
-      const left = Math.min(...items.map((item) => item.x));
-      const top = Math.min(...items.map((item) => item.y));
-      board.zoom = Math.max(MIN_ZOOM, Math.min(1, (viewport.clientWidth - 140) / 1200));
-      focusWorldPoint(left + 500, top + 280);
+  $("#fit-board").addEventListener("click", fitBoardContent);
+  $("#board-picker").addEventListener("change", (event) => openBoard(event.target.value));
+  $("#sync-now").addEventListener("click", () => {
+    if (!remoteSession) {
+      showToast("Connectez-vous pour synchroniser les tableaux de votre équipe.");
+      return;
     }
-    updateZoom();
-    updateViewSave();
+    syncRemoteChanges();
   });
   $("#delete-vector-button").addEventListener("click", deleteSelectedVector);
   document.querySelectorAll(".rail-link[data-tool]").forEach((button) => button.addEventListener("click", () => setTool(button.dataset.tool)));

@@ -139,6 +139,13 @@ textarea:focus-visible, input:focus-visible, select:focus-visible, [data-drag-ha
 .view-button { display: grid; width: 25px; height: 25px; place-items: center; border: 1px solid transparent; border-radius: 0; background: transparent; color: #f1f5ec; cursor: pointer; font-size: 16px; }
 .view-button:hover { border-color: #4a6a5e; background: #2a5147; color: var(--acid); }
 .fit-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.fit-button { display: inline-flex; width: auto; gap: 5px; padding: 0 5px; font-size: 10px; }
+.board-picker { min-width: 0; max-width: 150px; border: 1px solid #789183; background: #23463d; color: #edf4e9; padding: 4px; font: inherit; }
+@media (max-width: 700px) {
+  .board-picker { max-width: 95px; }
+  .toolbar-primary { flex-wrap: wrap; }
+  .canvas-toolbar { grid-template-rows: auto auto; }
+}
 .control-divider { height: 17px; margin: 0 2px; border-left: 1px solid #58776a; }
 .delete-vector-button { display: inline-flex; min-height: 25px; align-items: center; border: 1px solid #789183; background: #294b41; padding: 0 7px; color: #f4d8c9; cursor: pointer; font: 8px var(--mono); white-space: nowrap; }
 .delete-vector-button:hover { border-color: #efb69a; background: #3a5548; color: #fff1e8; }
