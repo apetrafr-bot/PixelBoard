@@ -124,7 +124,11 @@ function pixelboard_establish_session(array $user): string
 }
 
 try {
-    $configPath = __DIR__ . '/config.php';
+    // Keep deployment secrets outside public_html; retain legacy installations.
+    $configPath = dirname(__DIR__, 2) . '/pixelboard-config.php';
+    if (!is_file($configPath)) {
+        $configPath = __DIR__ . '/config.php';
+    }
     if (!is_file($configPath)) {
         pixelboard_fail(503, 'Le serveur équipe n’est pas encore configuré.');
     }

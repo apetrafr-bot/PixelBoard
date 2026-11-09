@@ -41,7 +41,7 @@ L’intégration serveur cible un hébergement mutualisé PHP avec PHP 8.1 ou ul
 
 1. Dans Hostinger, créez une base MySQL et un utilisateur avec accès à cette base; activez HTTPS pour le domaine avant d’utiliser l’API. L’API marque le cookie de session `Secure` lorsque PHP détecte HTTPS (`$_SERVER['HTTPS']`). Si un proxy ou une configuration particulière masque cette valeur, vérifiez-la ou corrigez la configuration avant d’ouvrir les comptes; ne transmettez jamais le secret d’installation en HTTP.
 2. Importez `api/schema.sql` dans cette base via phpMyAdmin.
-3. Dans le gestionnaire de fichiers Hostinger, créez **`public_html/api/config.php`** en copiant le contenu de **`api/config.example.php`** du dépôt. Remplacez les champs suivants avec les valeurs de votre base Hostinger (pas votre mot de passe de compte Hostinger) :
+3. Dans le gestionnaire de fichiers Hostinger, créez **`pixelboard-config.php` à côté du dossier `public_html`**, et non dedans, en copiant le contenu de **`api/config.example.php`** du dépôt. Ce fichier reste hors du dossier remplacé lors des déploiements. Remplacez les champs suivants avec les valeurs de votre base Hostinger (pas votre mot de passe de compte Hostinger) :
 
 | Champ dans `config.php` | Valeur à saisir |
 |---|---|
@@ -50,9 +50,11 @@ L’intégration serveur cible un hébergement mutualisé PHP avec PHP 8.1 ou ul
 | `db.password` | Mot de passe de cet utilisateur MySQL |
 | `setup_secret` | Votre secret aléatoire privé d’au moins 32 caractères, différent des mots de passe |
 
-Ne commitez jamais ce fichier. `api/config.php` et `dist/api/config.php` sont ignorés par Git; `.htaccess` interdit la lecture HTTP directe de `config.php`. Ne mettez aucune de ces valeurs dans le JavaScript, GitHub ou le formulaire de connexion.
+Ne commitez jamais ce fichier. Ne mettez aucune de ces valeurs dans le JavaScript, GitHub ou le formulaire de connexion. PHP doit pouvoir lire ce fichier hors de `public_html`; si une restriction `open_basedir` l'interdit, faites ajuster le chemin autorisé par l'hébergeur.
 
-4. Construisez le site avec `npm ci` puis `npm run build`. Le build inclut automatiquement dans **`dist/api/` uniquement `index.php`, `lib.php` et `.htaccess`**. Publiez **tout le contenu** de `dist/` à la racine `public_html/`, dossier `api` et fichier caché `.htaccess` compris. SQL, tests et exemple de configuration ne sont pas copiés dans le build. Le build ne vide pas le dossier de sortie et ne copie jamais `config.php`; une configuration déjà présente est préservée. Au redéploiement, ne supprimez pas `public_html/api/config.php` : configurez votre outil de transfert pour préserver ce fichier (pas de suppression miroir de ce fichier). Le build peut laisser d’anciens assets hachés inutilisés; ne supprimez pas l’ensemble du répertoire serveur pour les nettoyer. L’API utilise `/api/index.php?action=...` sur la même origine.
+**Migration d'une installation existante :** déplacez `public_html/api/config.php` vers `pixelboard-config.php` dans le dossier parent de `public_html`, sans changer son contenu. L'API lit ce nouvel emplacement en priorité et conserve l'ancien emplacement en secours pour les installations non migrées. Si le fichier a déjà été supprimé, recréez-le à ce nouvel emplacement avec les mêmes identifiants MySQL et le même secret si vous en avez une sauvegarde. Sans sauvegarde du secret, choisissez-en un nouveau. Ne réimportez pas le schéma et ne relancez pas le setup si votre base et votre propriétaire existent déjà.
+
+4. Construisez le site avec `npm ci` puis `npm run build`. Le build inclut automatiquement dans **`dist/api/` uniquement `index.php`, `lib.php` et `.htaccess`**. Publiez **tout le contenu** de `dist/` à la racine `public_html/`, dossier `api` et fichier caché `.htaccess` compris. SQL, tests et exemple de configuration ne sont pas copiés dans le build. Le build ne vide pas le dossier de sortie et ne copie jamais `config.php`; une configuration déjà présente est préservée par le build, mais pas nécessairement par Hostinger. Limitez le déploiement à `public_html` pour préserver `pixelboard-config.php` placé dans son dossier parent. Si vous gardez l'ancien emplacement `public_html/api/config.php`, votre outil de transfert doit explicitement préserver ce fichier (pas de suppression miroir). Le build peut laisser d'anciens assets hachés inutilisés. L'API utilise `/api/index.php?action=...` sur la même origine.
 5. Initialisez une seule fois le propriétaire depuis un terminal privé, jamais depuis le navigateur, en remplaçant les valeurs fictives :
 
 ```sh
@@ -67,7 +69,7 @@ Cette opération est refusée dès qu’un espace existe. Connectez-vous ensuite
 
 ### Vérifier l’installation et se connecter comme propriétaire
 
-Ouvrez `https://VOTRE-DOMAINE/api/index.php?action=auth`. Une 404 indique que le dossier API n’est pas publié au bon emplacement. Une réponse JSON 503 indique une configuration absente/incomplète ou MySQL indisponible : vérifiez `public_html/api/config.php`, PDO MySQL et le schéma importé. Une réponse JSON avec `user: null` et `csrf` signifie que l’API est joignable, pas qu’un compte existe.
+Ouvrez `https://VOTRE-DOMAINE/api/index.php?action=auth`. Une 404 indique que le dossier API n'est pas publié au bon emplacement. Une réponse JSON 503 indique une configuration absente/incomplète ou MySQL indisponible : vérifiez `pixelboard-config.php` dans le dossier parent de `public_html` (ou l'ancien `public_html/api/config.php`), PDO MySQL et le schéma importé. Une réponse JSON avec `user: null` et `csrf` signifie que l'API est joignable, pas qu'un compte existe.
 
 Exécutez ensuite la requête `setup` de l’étape 5 sur votre domaine HTTPS avec votre secret privé, nom, adresse e-mail et nouveau mot de passe (12 caractères minimum). Elle crée le seul propriétaire initial (administrateur de l’équipe), puis le verrou SQL empêche une nouvelle initialisation. Cliquez sur **Connexion** et utilisez cette adresse e-mail et ce mot de passe. L’inscription publique sur invitation ne donne jamais le rôle propriétaire. Ne supprimez pas le secret de la configuration après installation : le serveur l’utilise aussi pour limiter les tentatives de connexion; c’est le verrou en base qui désactive le setup.
 
