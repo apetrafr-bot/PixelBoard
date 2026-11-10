@@ -100,6 +100,8 @@ Pour une base existante, importez **une seule fois `api/migration-avatar.sql`** 
 
 Les quatre coins des cartes permettent de modifier largeur et hauteur au pointeur/toucher ou aux flèches. Les connecteurs neufs sont noirs; sélectionnez-en un pour régler sa couleur et sa courbure. Les couleurs explicites des connecteurs existants sont conservées. En cas de conflit, exportez votre copie avant **Mon compte → Recharger la copie serveur** si vous souhaitez conserver les changements locaux.
 
+Après agrandissement d’une image avec **+**, glissez son contenu pour atteindre tous les bords du recadrage, ou utilisez les flèches après avoir sélectionné l’image. Les limites suivent les dimensions réelles, la rotation et le redimensionnement de la carte, sans ancienne butée fixe liée au zoom. Un axe où l’image tient entièrement reste centré. Glissez l’en-tête **Image** pour déplacer la carte entière; **Espace + glisser** déplace le tableau, même au-dessus d’une image zoomée.
+
 Les poignées de carte sont discrètes (sans carrés verts) et restent accessibles au clavier. La barre du haut tient sur une seule ligne; sur écran étroit, elle défile horizontalement pour conserver toutes les actions. Dans Mon compte, l'aperçu affiche la photo actuelle; « Retirer » apparaît seulement lorsqu'une photo existe.
 
 Les connecteurs attachés se terminent aux bordures des cartes plutôt que dans leur contenu. Les points d'ancrage enregistrés sont conservés; le rendu se recalcule lorsque les cartes bougent ou changent de taille. Le trait et les pointes sont affinés.

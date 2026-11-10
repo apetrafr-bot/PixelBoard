@@ -968,6 +968,7 @@ function buildCard(item) {
         item.x = corner.includes("w") ? start.left + start.width - item.width : start.left;
         item.y = corner.includes("n") ? start.top + start.height - item.height : start.top;
         Object.assign(card.style, { width: `${item.width}px`, height: `${item.height}px`, left: `${item.x}px`, top: `${item.y}px` });
+        if (item.type === "image") applyImageTransform(card.querySelector(".image-plate"), item);
         renderVectorItems();
       };
       const end = () => {
@@ -989,6 +990,7 @@ function buildCard(item) {
       item.height = Math.max(140, card.offsetHeight + (event.key === "ArrowDown" ? 10 : event.key === "ArrowUp" ? -10 : 0));
       card.style.width = `${item.width}px`;
       card.style.height = `${item.height}px`;
+      if (item.type === "image") applyImageTransform(card.querySelector(".image-plate"), item);
       renderVectorItems();
       scheduleSave();
     });
@@ -1078,25 +1080,29 @@ function renderImageCard(card, item) {
   plate.style.borderColor = frameColor;
   const image = document.createElement("img");
   image.alt = item.title || "Image de référence";
+  image.draggable = false;
   image.src = URL.createObjectURL(item.image);
+  image.addEventListener("load", () => applyImageTransform(plate, item));
   plate.append(image);
   applyImageTransform(plate, item);
   plate.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || event.target !== image || (item.imageZoom ?? 1) <= 1) return;
+    if (event.button !== 0 || event.target !== image || activeTool !== "select" || spacePressed || (item.imageZoom ?? 1) <= 1) return;
     event.preventDefault();
     event.stopPropagation();
     snapshotState();
-    const rect = plate.getBoundingClientRect();
+    const metrics = imageElementMetrics(plate);
     const startX = event.clientX;
     const startY = event.clientY;
     const originX = item.imagePanX ?? 0;
     const originY = item.imagePanY ?? 0;
+    const screenWidth = Math.max(1, metrics.elementWidth * board.zoom);
+    const screenHeight = Math.max(1, metrics.elementHeight * board.zoom);
     plate.setPointerCapture(event.pointerId);
     plate.classList.add("is-panning");
     const move = (moveEvent) => {
-      const max = imagePanLimit(item.imageZoom);
-      item.imagePanX = Math.max(-max, Math.min(max, originX + (moveEvent.clientX - startX) / rect.width));
-      item.imagePanY = Math.max(-max, Math.min(max, originY + (moveEvent.clientY - startY) / rect.height));
+      const limits = imagePanLimits(plate, item) ?? { x: 0, y: 0 };
+      item.imagePanX = Math.max(-limits.x, Math.min(limits.x, originX + (moveEvent.clientX - startX) / screenWidth));
+      item.imagePanY = Math.max(-limits.y, Math.min(limits.y, originY + (moveEvent.clientY - startY) / screenHeight));
       applyImageTransform(plate, item);
     };
     const stop = () => {
@@ -1115,11 +1121,12 @@ function renderImageCard(card, item) {
     const direction = directions[event.key];
     if (!direction || (item.imageZoom ?? 1) <= 1) return;
     event.preventDefault();
+    event.stopPropagation();
     snapshotState();
     const step = event.shiftKey ? .08 : .025;
-    const max = imagePanLimit(item.imageZoom);
-    item.imagePanX = Math.max(-max, Math.min(max, (item.imagePanX ?? 0) + direction[0] * step));
-    item.imagePanY = Math.max(-max, Math.min(max, (item.imagePanY ?? 0) + direction[1] * step));
+    const limits = imagePanLimits(plate, item) ?? { x: 0, y: 0 };
+    item.imagePanX = Math.max(-limits.x, Math.min(limits.x, (item.imagePanX ?? 0) + direction[0] * step));
+    item.imagePanY = Math.max(-limits.y, Math.min(limits.y, (item.imagePanY ?? 0) + direction[1] * step));
     applyImageTransform(plate, item);
     scheduleSave();
   });
@@ -1137,12 +1144,46 @@ function renderImageCard(card, item) {
   }, { once: true });
 }
 
-function imagePanLimit(zoom) {
-  return Math.min(.45, Math.max(0, (zoom - 1) / (2 * zoom)));
-}
-
 function normalizedImageRotation(value) {
   return ((Math.round((Number(value) || 0) / 90) * 90) % 360 + 360) % 360;
+}
+
+function imageElementMetrics(plate) {
+  const quarterTurn = ["90", "270"].includes(plate.dataset.rotation);
+  const plateWidth = plate.clientWidth;
+  const plateHeight = plate.clientHeight;
+  return {
+    plateWidth,
+    plateHeight,
+    quarterTurn,
+    elementWidth: quarterTurn ? plateHeight : plateWidth,
+    elementHeight: quarterTurn ? plateWidth : plateHeight,
+  };
+}
+
+function imagePanLimits(plate, item) {
+  if (!plate) return null;
+  const image = $("img", plate);
+  const { plateWidth, plateHeight, quarterTurn, elementWidth, elementHeight } = imageElementMetrics(plate);
+  if (!image?.naturalWidth || !image.naturalHeight || !plateWidth || !plateHeight || !elementWidth || !elementHeight) return null;
+  const zoom = Math.max(1, item.imageZoom ?? 1);
+  const fit = Math.min(elementWidth / image.naturalWidth, elementHeight / image.naturalHeight);
+  const contentWidth = image.naturalWidth * fit;
+  const contentHeight = image.naturalHeight * fit;
+  const visibleWidth = (quarterTurn ? contentHeight : contentWidth) * zoom;
+  const visibleHeight = (quarterTurn ? contentWidth : contentHeight) * zoom;
+  return {
+    x: Math.max(0, visibleWidth - plateWidth) / (2 * elementWidth),
+    y: Math.max(0, visibleHeight - plateHeight) / (2 * elementHeight),
+  };
+}
+
+function clampImagePan(item, plate) {
+  const limits = imagePanLimits(plate, item);
+  if (!limits) return null;
+  item.imagePanX = Math.max(-limits.x, Math.min(limits.x, item.imagePanX ?? 0));
+  item.imagePanY = Math.max(-limits.y, Math.min(limits.y, item.imagePanY ?? 0));
+  return limits;
 }
 
 function applyImageTransform(plate, item) {
@@ -1150,8 +1191,9 @@ function applyImageTransform(plate, item) {
   const image = $("img", plate);
   const zoom = item.imageZoom ?? 1;
   const rotation = normalizedImageRotation(item.imageRotation);
-  plate.classList.toggle("is-pannable", zoom > 1);
   plate.dataset.rotation = String(rotation);
+  const limits = clampImagePan(item, plate);
+  plate.classList.toggle("is-pannable", limits ? limits.x > 0 || limits.y > 0 : zoom > 1);
   image?.style.setProperty("--image-zoom", String(zoom));
   image?.style.setProperty("--image-pan-x", `${(item.imagePanX ?? 0) * 100}%`);
   image?.style.setProperty("--image-pan-y", `${(item.imagePanY ?? 0) * 100}%`);
@@ -1794,7 +1836,13 @@ function renderBoard() {
   cardResizeObserver?.disconnect();
   canvas.replaceChildren(...board.items.filter((item) => !["connector", "drawing"].includes(item.type)).map(buildCard));
   if (typeof ResizeObserver !== "undefined") {
-    cardResizeObserver = new ResizeObserver(() => renderVectorItems());
+    cardResizeObserver = new ResizeObserver((entries) => {
+      for (const { target } of entries) {
+        const item = board.items.find((candidate) => candidate.id === target.dataset.id);
+        if (item?.type === "image") applyImageTransform(target.querySelector(".image-plate"), item);
+      }
+      renderVectorItems();
+    });
     canvas.querySelectorAll(".board-card").forEach((card) => cardResizeObserver.observe(card));
   }
   renderVectorItems();
@@ -3368,8 +3416,6 @@ function initEvents() {
     } else if (button.dataset.action === "zoom-in" || button.dataset.action === "zoom-out") {
       snapshotState();
       item.imageZoom = Math.max(1, Math.min(7, Math.round(((item.imageZoom ?? 1) + (button.dataset.action === "zoom-in" ? .35 : -.35)) * 10) / 10));
-      item.imagePanX = Math.max(-imagePanLimit(item.imageZoom), Math.min(imagePanLimit(item.imageZoom), item.imagePanX ?? 0));
-      item.imagePanY = Math.max(-imagePanLimit(item.imageZoom), Math.min(imagePanLimit(item.imageZoom), item.imagePanY ?? 0));
       applyImageTransform(card.querySelector(".image-plate"), item);
       scheduleSave();
     } else if (button.dataset.action === "fit-image") {
@@ -3445,6 +3491,9 @@ function initEvents() {
     if (menu && !menu.hidden && !event.target.closest("#card-menu")) closeCardMenu();
   });
 
+  viewport.addEventListener("mousedown", (event) => {
+    if (event.button === 1) event.preventDefault();
+  });
   viewport.addEventListener("pointerdown", (event) => {
     if (marqueeGesture) return;
     if (event.button === 1 || (event.button === 0 && spacePressed)) {
