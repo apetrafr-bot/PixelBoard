@@ -13,6 +13,17 @@ function pb_unity_hash(mixed $value): bool
     return is_string($value) && preg_match('/^[a-f0-9]{64}$/D', $value) === 1;
 }
 
+function pb_unity_thumbnail_valid(mixed $value): bool
+{
+    if ($value === null) return true;
+    if (!is_string($value) || strlen($value) > 131072 || !str_starts_with($value, 'data:image/png;base64,')) return false;
+    $encoded = substr($value, 22);
+    $bytes = base64_decode($encoded, true);
+    if ($bytes === false || base64_encode($bytes) !== $encoded || !str_starts_with($bytes, "\x89PNG\r\n\x1a\n")) return false;
+    $size = @getimagesizefromstring($bytes);
+    return $size !== false && $size[2] === IMAGETYPE_PNG && $size[0] >= 1 && $size[0] <= 128 && $size[1] >= 1 && $size[1] <= 128;
+}
+
 function pb_unity_ref(mixed $value): bool
 {
     return is_array($value) && is_string($value['guid'] ?? null) && preg_match('/^[a-f0-9]{32}$/D', $value['guid']) === 1
@@ -79,6 +90,7 @@ function pb_unity_snapshot_valid(mixed $snapshot): bool
         if (!pb_unity_ref($item) || !isset($assets[$item['guid'] . ':' . $item['file_id']])
             || !in_array($item['type'] ?? null, PIXELBOARD_ITEM_TYPES, true) || !pb_unity_hash($item['fingerprint'] ?? null)
             || !is_string($item['name'] ?? null) || !is_array($item['values'] ?? null)) return false;
+        if (!pb_unity_thumbnail_valid($item['thumbnail'] ?? null)) return false;
         $key = $item['guid'] . ':' . $item['file_id'];
         if (isset($items[$key])) return false;
         $items[$key] = true;
@@ -105,6 +117,7 @@ function pb_catalogue_valid(array $data): bool
                 || !is_bool($item['archived'] ?? null)) return false;
             if (isset($item['illustration']) && (!is_string($item['illustration']) || strlen($item['illustration']) > 1500000
                 || !preg_match('/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+\/]+=*$/D', $item['illustration']))) return false;
+            if (!pb_unity_thumbnail_valid($item['unityThumbnail'] ?? null)) return false;
             $ids[$item['id']] = true;
             if (($item['unity'] ?? null) !== null) {
                 if (!pb_unity_ref($item['unity']) || !pb_unity_hash($item['unity']['fingerprint'] ?? null)) return false;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { newCatalogue, fieldDefault, migrateValues, schemaChanges, snapshotMerge, itemSyncState, catalogueId } from "../src/items-model.js";
+import { newCatalogue, fieldDefault, migrateValues, schemaChanges, snapshotMerge, itemSyncState, catalogueId, itemThumbnail } from "../src/items-model.js";
 import { initItemsUI } from "../src/items-ui.js";
 
 const hash = "a".repeat(64);
@@ -73,6 +73,35 @@ test("sync states distinguish missing assets, changed schema and pending local e
   assert.equal(itemSyncState({ ...item, values: { ...item.values, name: "Modified" } }, snapshot), "modified");
 });
 
+test("Unity thumbnails update independently of values and preserve manual art, conflicts and omitted items", () => {
+  const png = "data:image/png;base64,preview";
+  const withImage = { ...snapshot, items: [{ ...unity, thumbnail: png }] };
+  const initial = snapshotMerge(newCatalogue("p", snapshot), withImage, () => "id").catalogue;
+  assert.equal(itemThumbnail(initial.definitions[0]), png);
+  assert.deepEqual(initial.definitions[0].values, unity.values);
+  assert.equal(initial.definitions[0].unity.fingerprint, hash);
+  const changed = { ...snapshot, items: [{ ...unity, thumbnail: "data:image/png;base64,updated" }] };
+  const refreshed = snapshotMerge(initial, changed, () => { throw Error("duplicate"); });
+  assert.equal(refreshed.conflicts.length, 0, "thumbnail-only changes do not need gameplay conflict review");
+  assert.equal(refreshed.catalogue.definitions[0].unityThumbnail, changed.items[0].thumbnail);
+  assert.equal(refreshed.catalogue.definitions[0].revision, 2);
+  initial.definitions[0].illustration = "manual";
+  initial.definitions[0].values.name = "Website edit";
+  const conflict = snapshotMerge(initial, changed, () => "unused");
+  assert.equal(conflict.conflicts.length, 1);
+  assert.equal(conflict.catalogue.definitions[0].values.name, "Website edit");
+  assert.equal(itemThumbnail(conflict.catalogue.definitions[0]), "manual");
+  assert.equal(conflict.catalogue.definitions[0].unityThumbnail, changed.items[0].thumbnail);
+  const oldConnector = snapshotMerge(initial, snapshot, () => "unused");
+  assert.equal(oldConnector.catalogue.definitions[0].unityThumbnail, png, "omission by old connector does not erase preview");
+  const cleared = snapshotMerge(initial, { ...snapshot, items: [{ ...unity, thumbnail: null }] }, () => "unused");
+  assert.equal(cleared.catalogue.definitions[0].unityThumbnail, null, "explicit null removes stale exported preview");
+  assert.equal(itemThumbnail(cleared.catalogue.definitions[0]), "manual");
+  const omitted = snapshotMerge(initial, { ...snapshot, items: [] }, () => "unused");
+  assert.deepEqual(omitted.catalogue, initial, "partial snapshot never removes existing definition or image");
+  assert.equal(itemThumbnail({}), null);
+});
+
 test("wire routes enforce owner writes, scoped bearer, rechecks and immutable snapshot job storage", async () => {
   const api = await readFile(new URL("../api/unity.php", import.meta.url), "utf8");
   assert.match(api, /pixelboard_require_csrf\(\)/);
@@ -84,6 +113,7 @@ test("wire routes enforce owner writes, scoped bearer, rechecks and immutable sn
   assert.match(api, /payload_hash/);
   assert.match(api, /Résultat terminal différent/);
   assert.match(api, /json_encode\(pb_unity_wire_shape\(\$payload\)/, "immutable JSON snapshot copied into job");
+  assert.match(api, /unset\(\$item\['illustration'\], \$item\['lastUnityValues'\], \$item\['unityThumbnail'\]\)/, "thumbnails never enter import payload");
   const sql = await readFile(new URL("../api/unity-schema.sql", import.meta.url), "utf8");
   assert.match(sql, /UNIQUE KEY unity_request_unique/);
   assert.doesNotMatch(sql, /DROP TABLE|DELETE FROM/);

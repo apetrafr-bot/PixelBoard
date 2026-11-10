@@ -107,8 +107,20 @@ missing/restored definitions or identity collisions requiring reconciliation.
 This binding and the immutable terminal result commit atomically; an exact result
 retry never changes the catalogue twice.
 
+Optional `snapshot.items[].thumbnail` is `null` or a PNG data URL
+`data:image/png;base64,...`, at most 131072 ASCII characters including the prefix.
+It must decode as PNG, dimensions 1–128 pixels on each axis. The complete snapshot
+retains its 32 MiB limit. Only item primary Sprite previews are exported, not a
+thumbnail for every asset-index entry. This is display metadata outside gameplay
+`values`, schema and fingerprints. The server validates strict base64, PNG signature,
+image dimensions and size. The catalogue persists it as `definition.unityThumbnail`.
+Thumbnail-only updates do not conflict with website gameplay edits. Explicit null
+clears an old exported preview; an omitted field from older connectors preserves
+an existing preview. Items omitted from a partial snapshot remain in the catalogue.
+
 Optional `definition.illustration` is a bounded PNG/JPEG/WEBP data URL, a website
-illustration only. It and `lastUnityValues` are omitted from job payloads. Field
+illustration only, with display priority over `unityThumbnail`. Both images and
+`lastUnityValues` are omitted from job payloads. Field
 identifiers `__proto__`, `prototype`, `constructor` are rejected. Object/list JSON
 shapes, including empty objects, are preserved; PHP preserves zero-fraction float
 defaults. Schema/fingerprint hashes remain Editor-generated opaque identities.

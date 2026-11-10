@@ -1,4 +1,4 @@
-import { ITEM_TYPES, catalogueId, newCatalogue, fieldDefault, defaults, schemaChanges, migrateValues, snapshotMerge, itemSyncState, assetKey } from "./items-model.js";
+import { ITEM_TYPES, catalogueId, newCatalogue, fieldDefault, defaults, schemaChanges, migrateValues, snapshotMerge, itemSyncState, assetKey, itemThumbnail } from "./items-model.js";
 import { createUnityPullSync } from "./items-sync.js";
 
 const stateLabels = { archived: "Archivé", offline: "Unity indisponible", schema: "Champs à vérifier", new: "À créer", missing: "Asset manquant", conflict: "Conflit Unity", synced: "Synchronisé", modified: "Modifié ici" };
@@ -65,6 +65,18 @@ export function initItemsUI(host) {
     render();
   };
   const confirm = (title, text, action) => host.confirm(title, text, action);
+  const focusInspector = () => {
+    const heading = content.querySelector?.(".item-inspector-title");
+    heading?.focus();
+    heading?.scrollIntoView?.({ block: "start" });
+  };
+  const preview = (item) => {
+    const source = itemThumbnail(item);
+    if (!source) return node("span", "Sans image", "item-thumbnail-empty");
+    const image = node("img");
+    image.src = source; image.alt = ""; image.className = "item-thumbnail"; image.loading = "lazy";
+    return image;
+  };
   const pull = createUnityPullSync({
     request: (id) => call("request", { request_id: id, kind: "refresh", item_ids: [] }),
     read: () => request("unity-state", { query: `&project_id=${encodeURIComponent(projectId)}` }),
@@ -109,7 +121,10 @@ export function initItemsUI(host) {
     wrapper.append(caption);
     if (field.header) wrapper.prepend(node("strong", field.header));
     if (field.tooltip) wrapper.append(node("small", field.tooltip));
+    if (field.label && field.label !== field.name) wrapper.append(node("small", field.name, "item-field-name"));
+    wrapper.dataset.field = field.name;
     const kind = field.kind;
+    if (value === undefined) wrapper.append(node("small", "Valeur absente du catalogue : import bloqué tant que le schéma n’est pas rapproché.", "item-warning"));
     if (level > 12) {
       wrapper.append(node("p", "Imbrication trop profonde : import bloqué."));
       return wrapper;
@@ -123,9 +138,11 @@ export function initItemsUI(host) {
           value[child.name] = next; change(value);
         }, snapshot, level + 1)));
         const unknown = Object.keys(value).filter((key) => !field.fields.some((child) => child.name === key));
-        if (unknown.length) details.append(node("p", `Anciens champs conservés, import bloqué : ${unknown.join(", ")}`, "item-warning"));
+        if (unknown.length) details.append(node("p", `Anciens champs conservés, import bloqué : ${unknown.join(", ")}`, "item-warning"),
+          node("pre", JSON.stringify(Object.fromEntries(unknown.map((key) => [key, value[key]])), null, 2)));
       } else if (kind === "list" && Array.isArray(value)) {
         const draw = () => {
+          details.querySelector("summary").textContent = `${value.length} éléments`;
           details.querySelectorAll(".item-list-entry,.item-list-add").forEach((element) => element.remove());
           value.forEach((entry, index) => {
             const row = node("div", undefined, "item-list-entry");
@@ -214,6 +231,12 @@ export function initItemsUI(host) {
     }
     input.id = id;
     wrapper.append(input);
+    if (kind === "bool") {
+      wrapper.classList.add("item-field-bool");
+      const checked = node("span", value === true ? "Oui" : value === false ? "Non" : "Valeur absente", "item-bool-state");
+      input.addEventListener("input", () => { checked.textContent = input.checked ? "Oui" : "Non"; });
+      wrapper.append(checked);
+    }
     return wrapper;
   }
 
@@ -268,14 +291,12 @@ export function initItemsUI(host) {
         const row = node("div", undefined, "items-row");
         const choose = button(item.name || "Item sans nom", () => {
           if (draft) { say("Enregistrez ou abandonnez la fiche ouverte avant de changer d’item."); return; }
-          selectedId = item.id; render();
+          selectedId = item.id; render(); focusInspector();
         });
+        choose.classList.add("item-choose");
+        choose.setAttribute("aria-label", `Inspecter ${item.name || "cet item"} (${item.type})`);
         choose.draggable = !item.archived;
-        if (item.illustration) {
-          const image = node("img");
-          image.src = item.illustration; image.alt = ""; image.className = "item-thumbnail";
-          choose.prepend(image);
-        }
+        choose.prepend(preview(item));
         choose.addEventListener("dragstart", (event) => {
           event.dataTransfer.setData("application/x-pixelboard-item", JSON.stringify({ projectId, itemId: item.id }));
           event.dataTransfer.effectAllowed = "copy";
@@ -302,13 +323,25 @@ export function initItemsUI(host) {
     content.append(create);
     const selected = record.definitions.find((item) => item.id === selectedId);
     if (!selected) return;
+    controls.hidden = true; list.hidden = true; create.hidden = true;
     if (!draft) { draft = structuredClone(selected); baseVersion = host.version(record.id); }
     const editor = node("form", undefined, "item-editor");
-    const heading = node("h3", `Fiche · ${selected.type}`);
+    const heading = node("h3", draft.name || "Item sans nom", "item-inspector-title");
+    heading.tabIndex = -1;
+    editor.append(button("← Revenir aux items", () => {
+      const saved = record.definitions.find((item) => item.id === selectedId);
+      if (JSON.stringify(draft) !== JSON.stringify(saved)) { say("Enregistrez la fiche ou abandonnez le brouillon pour revenir aux items."); return; }
+      draft = null; selectedId = null; render();
+    }));
+    const identity = node("div", undefined, "item-inspector-heading");
+    identity.append(preview(draft), heading, node("small", selected.type));
+    editor.append(identity, node("p", "Variables sérialisées Unity. Les cases cochées et décochées reflètent les valeurs de cette fiche; enregistrer ici ne modifie pas Unity."));
     const nameLabel = node("label", "Nom dans le catalogue");
     const name = node("input"); name.value = draft.name; name.required = true; name.maxLength = 120;
     name.addEventListener("input", () => { draft.name = name.value; });
-    nameLabel.append(name); editor.append(heading, nameLabel);
+    nameLabel.append(name);
+    const presentation = node("details", undefined, "item-presentation");
+    presentation.append(node("summary", "Nom et illustration du catalogue"), nameLabel);
     const illustrationLabel = node("label", "Miniature illustrative (ne remplace pas un Sprite Unity)");
     const illustration = node("input");
     illustration.type = "file"; illustration.accept = "image/png,image/jpeg,image/webp";
@@ -328,12 +361,22 @@ export function initItemsUI(host) {
       say("Miniature ajoutée au brouillon. Enregistrez la fiche pour la partager.");
     }));
     illustrationLabel.append(illustration);
-    editor.append(illustrationLabel);
-    if (draft.illustration) editor.append(button("Retirer la miniature", () => { delete draft.illustration; render(); }));
+    presentation.append(illustrationLabel);
+    if (draft.illustration) presentation.append(button("Retirer la miniature", () => { delete draft.illustration; render(); }));
+    editor.append(presentation);
     const family = (record.schema || snapshot.schema).families.find((entry) => entry.type === selected.type);
-    family.fields.forEach((field) => editor.append(renderField(field, draft.values[field.name], (value) => { draft.values[field.name] = value; }, snapshot)));
+    let group = editor;
+    family.fields.forEach((field) => {
+      if (field.header) {
+        group = node("fieldset", undefined, "item-field-group");
+        group.append(node("legend", field.header));
+        editor.append(group);
+      }
+      group.append(renderField({ ...field, header: undefined }, draft.values[field.name], (value) => { draft.values[field.name] = value; }, snapshot));
+    });
     const unknown = Object.keys(draft.values).filter((key) => !family.fields.some((field) => field.name === key));
-    if (unknown.length) editor.append(node("p", `Champs retirés conservés : ${unknown.join(", ")}. Import bloqué : vérifiez le schéma dans Unity.`, "item-warning"));
+    if (unknown.length) editor.append(node("p", `Champs retirés conservés : ${unknown.join(", ")}. Import bloqué : vérifiez le schéma dans Unity.`, "item-warning"),
+      node("pre", JSON.stringify(Object.fromEntries(unknown.map((key) => [key, draft.values[key]])), null, 2)));
     const submit = node("button", "Enregistrer la fiche", "button button-dark"); submit.type = "submit";
     editor.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -472,10 +515,13 @@ export function initItemsUI(host) {
     setBlocked(value) { panel.inert = value; },
     openItem(project, id) {
       if (busy) { say("Attendez la fin de la synchronisation avant d’ouvrir une fiche."); return; }
+      if (draft && JSON.stringify(draft) !== JSON.stringify(catalogue()?.definitions.find((item) => item.id === selectedId))) {
+        say("Enregistrez ou abandonnez le brouillon ouvert avant d’inspecter un autre item."); return;
+      }
       if (project !== projectId) { pull.reset(); conflicts = []; }
       projectInput.value = project; projectId = project; selectedId = id; draft = null;
       panel.hidden = false;
-      run(refresh);
+      run(async () => { await refresh(); focusInspector(); });
     },
     sessionChanged() {
       document.querySelector("#items-pair-controls").hidden = !owner();

@@ -2,6 +2,7 @@ export const ITEM_TYPES = ["TilesClass", "ToolClass", "WeaponsClass", "ArmureCla
 export const catalogueId = (projectId) => `__items__:${projectId}`;
 export const isCatalogue = (record) => record?.recordType === "item-catalogue";
 export const assetKey = (asset) => asset ? `${asset.guid}:${asset.file_id}` : "";
+export const itemThumbnail = (item) => item?.illustration || item?.unityThumbnail || null;
 
 export function newCatalogue(projectId, snapshot) {
   return {
@@ -71,11 +72,19 @@ export function snapshotMerge(catalogue, snapshot, makeId, overwriteIds = new Se
         id: makeId(), type: unity.type, name: unity.name, values: structuredClone(unity.values),
         schemaHash: snapshot.schema_hash, unity: identity, revision: 1, archived: false,
         lastUnityValues: structuredClone(unity.values),
+        unityThumbnail: unity.thumbnail ?? null,
       });
-    } else if (JSON.stringify(current.values) !== JSON.stringify(unity.values) || current.unity.fingerprint !== unity.fingerprint) {
-      if (!overwriteIds.has(current.id)) conflicts.push({ id: current.id, current, unity });
-      else {
-        Object.assign(current, { values: structuredClone(unity.values), name: unity.name, schemaHash: snapshot.schema_hash, unity: identity, lastUnityValues: structuredClone(unity.values), revision: current.revision + 1 });
+    } else {
+      const thumbnailChanged = Object.hasOwn(unity, "thumbnail") && current.unityThumbnail !== unity.thumbnail;
+      if (thumbnailChanged) {
+        current.unityThumbnail = unity.thumbnail;
+        current.revision++;
+      }
+      if (JSON.stringify(current.values) !== JSON.stringify(unity.values) || current.unity.fingerprint !== unity.fingerprint) {
+        if (!overwriteIds.has(current.id)) conflicts.push({ id: current.id, current, unity });
+        else {
+          Object.assign(current, { values: structuredClone(unity.values), name: unity.name, schemaHash: snapshot.schema_hash, unity: identity, lastUnityValues: structuredClone(unity.values), revision: current.revision + 1 });
+        }
       }
     }
   }

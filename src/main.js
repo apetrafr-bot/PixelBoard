@@ -1,6 +1,6 @@
 import "./styles.css";
 import { initItemsUI } from "./items-ui.js";
-import { isCatalogue, catalogueId } from "./items-model.js";
+import { isCatalogue, catalogueId, itemThumbnail } from "./items-model.js";
 
 const DB_NAME = "pixelboard-local";
 const STORE_NAME = "boards";
@@ -951,6 +951,11 @@ function renderItemReference(card, item) {
   content.className = "item-ref-content";
   const name = document.createElement("strong");
   name.textContent = definition?.name || "Référence item introuvable";
+  const inspect = document.createElement("button");
+  inspect.type = "button";
+  inspect.className = "item-reference-inspect";
+  inspect.setAttribute("aria-label", `Inspecter ${definition?.name || "cet item"} dans le catalogue Unity`);
+  inspect.addEventListener("click", () => itemsUI?.openItem(item.projectId, item.itemId));
   const detail = document.createElement("small");
   const syncLabel = definition?.archived ? "Archivé" : !definition?.unity ? "À créer dans Unity"
     : JSON.stringify(definition.values) === JSON.stringify(definition.lastUnityValues) ? "Dernière liaison confirmée" : "Modifié ici";
@@ -961,12 +966,19 @@ function renderItemReference(card, item) {
   open.className = "small-action";
   open.textContent = "Ouvrir la fiche centrale";
   open.addEventListener("click", () => itemsUI?.openItem(item.projectId, item.itemId));
-  if (definition?.illustration) {
+  const source = itemThumbnail(definition);
+  if (source) {
     const image = document.createElement("img");
-    image.src = definition.illustration; image.alt = ""; image.className = "item-thumbnail";
-    content.append(image);
+    image.src = source; image.alt = ""; image.className = "item-thumbnail";
+    inspect.append(image);
+  } else {
+    const empty = document.createElement("span");
+    empty.className = "item-thumbnail-empty";
+    empty.textContent = "Sans image";
+    inspect.append(empty);
   }
-  content.append(name, detail, open);
+  inspect.append(name);
+  content.append(inspect, detail, open);
   card.append(content);
 }
 

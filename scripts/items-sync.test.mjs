@@ -138,11 +138,19 @@ function fakeDOM() {
   const previous = { document: globalThis.document, Option: globalThis.Option };
   class Element {
     hidden = true; value = ""; textContent = ""; children = []; listeners = {}; attributes = {};
-    addEventListener(name, action) { this.listeners[name] = action; }
+    dataset = {};
+    className = "";
+    classList = { add: (...names) => { this.className += ` ${names.join(" ")}`; } };
+    addEventListener(name, action) {
+      const previous = this.listeners[name];
+      this.listeners[name] = previous ? (...args) => { previous(...args); action(...args); } : action;
+    }
     setAttribute(key, value) { this.attributes[key] = value; }
     replaceChildren(...elements) { this.children = elements; }
     append(...elements) { this.children.push(...elements); }
     prepend(...elements) { this.children.unshift(...elements); }
+    querySelectorAll() { return []; }
+    querySelector(selector) { return selector === "summary" ? this.children.find((element) => element.tagName === "summary") : null; }
     focus() {}
   }
   const elements = new Map();
@@ -150,7 +158,7 @@ function fakeDOM() {
     if (!elements.has(selector)) elements.set(selector, new Element());
     return elements.get(selector);
   };
-  globalThis.document = { querySelector: get, createElement: () => new Element() };
+  globalThis.document = { querySelector: get, createElement: (tag) => { const element = new Element(); element.tagName = tag; return element; } };
   globalThis.Option = class extends Element { constructor(text, value) { super(); this.textContent = text; this.value = value; } };
   return { get, restore() { globalThis.document = previous.document; globalThis.Option = previous.Option; } };
 }
@@ -159,7 +167,7 @@ test("opening Items automatically selects and loads an existing catalogue, with 
   const dom = fakeDOM();
   const calls = [];
   try {
-    initItemsUI({
+    const ui = initItemsUI({
       session: () => ({ id: "owner", role: "owner" }),
       records: () => [newCatalogue("existing-project", snapshot)],
       api: async (action, options) => { calls.push([action, options]); return { ...state("queued", null), jobs: [] }; },
@@ -173,6 +181,61 @@ test("opening Items automatically selects and loads an existing catalogue, with 
     assert.equal(dom.get("#items-project-label").textContent, "Mon jeu");
     assert.equal(calls.length, 1, "opening is read-only and does not request writes or refresh without user action");
   } finally { dom.restore(); }
+});
+
+test("clicking image/title opens all serialized fields, including unchecked booleans, nested values, references and groups", async () => {
+      const dom = fakeDOM();
+      const fields = [
+        { name: "enabled", label: "Enabled", kind: "bool", header: "Gameplay", tooltip: "Whether enabled." },
+        { name: "disabled", label: "Disabled", kind: "bool" },
+        { name: "count", kind: "int" },
+        { name: "reference", kind: "asset", type: "UnityEngine.Sprite" },
+        { name: "nested", kind: "object", fields: [{ name: "text", kind: "string" }] },
+        { name: "entries", kind: "list", element: { name: "element", kind: "bool" } },
+        { name: "unsupported", kind: "unsupported", type: "Unknown" },
+      ];
+      const values = { enabled: true, disabled: false, count: 0, reference: null, nested: { text: "Nested value" }, entries: [false, true], unsupported: "Retained raw" };
+      const data = { ...snapshot, schema: { families: [{ type: "TilesClass", fields }] }, items: [{ ...snapshot.items[0], thumbnail: "data:image/png;base64,test", values }] };
+      let record = snapshotMerge(newCatalogue("inspect", data), data, () => "canonical").catalogue;
+      const walk = (element) => [element, ...(element.children || []).flatMap((child) => typeof child === "object" ? walk(child) : [])];
+      try {
+        const ui = initItemsUI({
+          session: () => ({ id: "owner", role: "owner" }), records: () => [record], version: () => 1,
+          api: async () => ({ ...state("succeeded", data), jobs: [] }),
+          save: async (next) => { record = next; },
+        });
+        dom.get("#items-open").listeners.click();
+        await tick();
+        const choose = walk(dom.get("#items-content")).find((element) => element.className.includes("item-choose"));
+        assert.ok(choose.children.some((element) => element.tagName === "img" && element.src === data.items[0].thumbnail));
+        choose.listeners.click();
+        const nodes = walk(dom.get("#items-content"));
+        const editor = nodes.find((element) => element.tagName === "form");
+        const inspected = walk(editor);
+        assert.ok(inspected.some((element) => element.tagName === "legend" && element.textContent === "Gameplay"));
+        assert.ok(inspected.some((element) => element.textContent === "Whether enabled."));
+        const field = (name) => inspected.find((element) => element.dataset.field === name);
+        assert.equal(field("enabled").children.find((element) => element.type === "checkbox").checked, true);
+        const unchecked = field("disabled").children.find((element) => element.type === "checkbox");
+        assert.equal(unchecked.checked, false);
+        assert.ok(field("disabled").children.some((element) => element.textContent === "Non"));
+        assert.equal(field("count").children.find((element) => element.type === "number").value, 0);
+        assert.equal(field("reference").children.find((element) => element.tagName === "select").value, "null");
+        assert.ok(inspected.some((element) => element.tagName === "textarea" && element.value === "Nested value"));
+        assert.ok(field("unsupported").children.some((element) => element.tagName === "pre" && element.textContent.includes("Retained raw")));
+        assert.equal(inspected.filter((element) => element.type === "checkbox").length, 4, "nested/list checkbox values are not filtered out");
+        unchecked.checked = true;
+        unchecked.listeners.input();
+        assert.ok(field("disabled").children.some((element) => element.textContent === "Oui"));
+        ui.openItem("another-project", "another-item");
+        assert.ok(walk(dom.get("#items-content")).includes(editor), "linked-card navigation never discards an unsaved draft");
+        assert.match(dom.get("#items-status").textContent, /Enregistrez ou abandonnez/);
+        editor.listeners.submit({ preventDefault() {} });
+        await tick();
+        assert.equal(record.definitions[0].values.disabled, true);
+        assert.equal(record.definitions[0].values.count, 0);
+        assert.equal(record.definitions[0].unityThumbnail, data.items[0].thumbnail);
+      } finally { dom.restore(); }
 });
 
 test("one click in Items uses refresh only and automatically creates the catalogue on success", async () => {

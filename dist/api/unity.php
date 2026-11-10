@@ -153,7 +153,7 @@ function pb_unity_handle(PDO $db, string $action, string $method): never
                     foreach ($ids as $itemId) if (!pb_unity_id($itemId)) pb_unity_reject(422,'Identifiant d’item invalide.');
                     if (count(array_unique($ids))!==count($ids)) pb_unity_reject(422,'Sélectionnez des items distincts.');
                     foreach ($data['definitions'] as $item) if (in_array($item['id'],$ids,true)) {
-                        unset($item['illustration'], $item['lastUnityValues']);
+                        unset($item['illustration'], $item['lastUnityValues'], $item['unityThumbnail']);
                         $items[]=$item;
                     }
                     if (count($items)!==count($ids)) pb_unity_reject(422,'Item absent du catalogue.');

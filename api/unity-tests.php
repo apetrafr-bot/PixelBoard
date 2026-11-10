@@ -81,4 +81,23 @@ $good=$catalogue;$good['definitions'][0]['illustration']='data:image/png;base64,
 unity_check(pb_catalogue_valid($good),'bounded passive illustration accepted');
 unity_check(pixelboard_valid_backup_records([['board_id'=>$catalogue['id'],'data'=>json_encode($catalogue,JSON_THROW_ON_ERROR)]]),'catalogue preserved in protected backup records');
 unity_check(pixelboard_valid_backup_records([['board_id'=>'root','data'=>json_encode(['id'=>'root','items'=>[['id'=>'ref','type'=>'item-ref','projectId'=>'project','itemId'=>'item']]],JSON_THROW_ON_ERROR)]]),'linked card preserved in protected backup records');
+$png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6zZcAAAAASUVORK5CYII=';
+unity_check(pb_unity_thumbnail_valid($png),'real small PNG thumbnail accepted');
+unity_check(pb_unity_thumbnail_valid(null),'missing sprite explicit null accepted');
+foreach (['https://example.test/preview.png','data:image/svg+xml;base64,AAAA','data:image/png;base64,not!base64','data:image/png;base64,'.base64_encode('not PNG'),str_repeat('a',131073)] as $invalid) {
+    unity_check(!pb_unity_thumbnail_valid($invalid),'unsafe or oversized thumbnail rejected');
+}
+$bytes=base64_decode(substr($png,22),true);
+$oversized=substr_replace($bytes,pack('N',129),16,4);
+unity_check(!pb_unity_thumbnail_valid('data:image/png;base64,'.base64_encode($oversized)),'129px preview rejected');
+$good=$catalogue;$good['definitions'][0]['unityThumbnail']=$png;
+unity_check(pb_catalogue_valid($good),'catalogue keeps valid Unity preview');
+unity_check(pixelboard_valid_backup_records([['board_id'=>$good['id'],'data'=>json_encode($good,JSON_THROW_ON_ERROR)]]),'protected backup preserves Unity thumbnail');
+$good['definitions'][0]['unityThumbnail']='data:image/png;base64,AAAA';
+unity_check(!pb_catalogue_valid($good),'invalid stored thumbnail rejected');
+$withImage=$snapshot;
+$withImage['items']=[['guid'=>$guid,'file_id'=>'9223372036854775806','type'=>'TilesClass','name'=>'Image item','values'=>[],'fingerprint'=>$hash,'thumbnail'=>$png]];
+unity_check(pb_unity_snapshot_valid($withImage),'snapshot accepts bounded optional preview');
+$withImage['items'][0]['thumbnail']='data:image/png;base64,AAAA';
+unity_check(!pb_unity_snapshot_valid($withImage),'snapshot rejects forged preview');
 echo "Unity protocol helper tests passed.\n";
