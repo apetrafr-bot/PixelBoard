@@ -265,8 +265,9 @@ body.auth-locked .app-shell { display: none; }
 .audio-content button { margin-top: 8px; }
 .audio-content :focus-visible { outline: 2px solid #375a49; outline-offset: 3px; }
 .image-card .card-grip { border-bottom: 0; }
-.image-plate { position: relative; display: grid; height: 192px; place-items: center; overflow: hidden; margin: 0 8px; border: 2px solid #29483d; background-color: #d3ded0; background-image: linear-gradient(45deg,#71897525 25%,transparent 25%),linear-gradient(-45deg,#71897525 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#71897525 75%),linear-gradient(-45deg,transparent 75%,#71897525 75%); background-size: 12px 12px; background-position: 0 0,0 6px,6px -6px,-6px 0; }
-.image-plate img { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; transform: translate(var(--image-pan-x,0%),var(--image-pan-y,0%)) scale(var(--image-zoom,1)); transition: transform .12s steps(2,end); }
+.image-plate { position: relative; display: grid; height: 192px; place-items: center; overflow: hidden; margin: 0 8px; border: 2px solid #29483d; background-color: #d3ded0; background-image: linear-gradient(45deg,#71897525 25%,transparent 25%),linear-gradient(-45deg,#71897525 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#71897525 75%),linear-gradient(-45deg,transparent 75%,#71897525 75%); background-size: 12px 12px; background-position: 0 0,0 6px,6px -6px,-6px 0; container-type: size; }
+.image-plate img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; margin: auto; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; transform: translate(var(--image-pan-x,0%),var(--image-pan-y,0%)) scale(var(--image-zoom,1)) rotate(var(--image-rotation,0deg)); transition: transform .12s steps(2,end); }
+.image-plate[data-rotation="90"] img, .image-plate[data-rotation="270"] img { width: 100cqh; height: 100cqw; }
 .image-plate.is-pannable img { cursor: grab; }
 .image-plate.is-panning img { cursor: grabbing; transition: none; }
 .image-error { color: #6d3228; font-size: 11px; }

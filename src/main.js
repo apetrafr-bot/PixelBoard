@@ -909,7 +909,13 @@ function buildCard(item) {
   const actions = document.createElement("div");
   actions.className = "card-actions";
   if (item.type === "image") {
-    actions.append(iconButton("−", "Réduire le zoom de l’image", "zoom-out"), iconButton("+", "Agrandir le zoom de l’image", "zoom-in"));
+    actions.append(
+      iconButton("−", "Réduire le zoom de l’image", "zoom-out"),
+      iconButton("+", "Agrandir le zoom de l’image", "zoom-in"),
+      iconButton("⤢", "Ajuster l’image entière dans la carte", "fit-image"),
+      iconButton("⟲", "Tourner l’image de 90° vers la gauche", "rotate-left"),
+      iconButton("⟳", "Tourner l’image de 90° vers la droite", "rotate-right"),
+    );
     const color = document.createElement("input");
     color.type = "color";
     color.className = "frame-color-picker";
@@ -1066,7 +1072,7 @@ function renderImageCard(card, item) {
   plate.className = "image-plate";
   plate.tabIndex = 0;
   plate.setAttribute("role", "group");
-  plate.setAttribute("aria-label", "Image recadrable. Après zoom, faites glisser l’image ou utilisez les flèches du clavier pour la déplacer.");
+  plate.setAttribute("aria-label", "Image. Boutons ⟲ et ⟳ pour tourner par pas de 90°, ⤢ pour ajuster l’image entière. Après zoom, faites glisser l’image ou utilisez les flèches du clavier pour la déplacer.");
   const frameColor = safeHexColor(item.frameColor, "#d3ded0");
   plate.style.backgroundColor = frameColor;
   plate.style.borderColor = frameColor;
@@ -1135,13 +1141,21 @@ function imagePanLimit(zoom) {
   return Math.min(.45, Math.max(0, (zoom - 1) / (2 * zoom)));
 }
 
+function normalizedImageRotation(value) {
+  return ((Math.round((Number(value) || 0) / 90) * 90) % 360 + 360) % 360;
+}
+
 function applyImageTransform(plate, item) {
+  if (!plate) return;
   const image = $("img", plate);
   const zoom = item.imageZoom ?? 1;
+  const rotation = normalizedImageRotation(item.imageRotation);
   plate.classList.toggle("is-pannable", zoom > 1);
+  plate.dataset.rotation = String(rotation);
   image?.style.setProperty("--image-zoom", String(zoom));
   image?.style.setProperty("--image-pan-x", `${(item.imagePanX ?? 0) * 100}%`);
   image?.style.setProperty("--image-pan-y", `${(item.imagePanY ?? 0) * 100}%`);
+  image?.style.setProperty("--image-rotation", `${rotation}deg`);
 }
 
 function renderNoteCard(card, item) {
@@ -3338,6 +3352,19 @@ function initEvents() {
       item.imageZoom = Math.max(1, Math.min(7, Math.round(((item.imageZoom ?? 1) + (button.dataset.action === "zoom-in" ? .35 : -.35)) * 10) / 10));
       item.imagePanX = Math.max(-imagePanLimit(item.imageZoom), Math.min(imagePanLimit(item.imageZoom), item.imagePanX ?? 0));
       item.imagePanY = Math.max(-imagePanLimit(item.imageZoom), Math.min(imagePanLimit(item.imageZoom), item.imagePanY ?? 0));
+      applyImageTransform(card.querySelector(".image-plate"), item);
+      scheduleSave();
+    } else if (button.dataset.action === "fit-image") {
+      snapshotState();
+      item.imageZoom = 1;
+      item.imagePanX = 0;
+      item.imagePanY = 0;
+      applyImageTransform(card.querySelector(".image-plate"), item);
+      scheduleSave();
+    } else if (button.dataset.action === "rotate-left" || button.dataset.action === "rotate-right") {
+      snapshotState();
+      const delta = button.dataset.action === "rotate-right" ? 90 : -90;
+      item.imageRotation = normalizedImageRotation((item.imageRotation ?? 0) + delta);
       applyImageTransform(card.querySelector(".image-plate"), item);
       scheduleSave();
     }
