@@ -1928,10 +1928,13 @@ function setTool(tool) {
     if (button.dataset.tool === tool) button.setAttribute("aria-current", "tool");
     else button.removeAttribute("aria-current");
   });
-  $("#canvas-hint").hidden = tool === "select";
-  $("#canvas-hint").innerHTML = tool === "line"
-      ? '<span class="hint-drag" aria-hidden="true">↗</span> Tirez d’une carte vers une autre pour les relier'
-      : '<span class="hint-drag" aria-hidden="true">✎</span> Dessinez librement · double-cliquez un tracé pour le supprimer';
+  const canvasHint = $("#canvas-hint");
+  canvasHint.hidden = false;
+  canvasHint.innerHTML = tool === "select"
+      ? '<span class="hint-drag" aria-hidden="true">▭</span> Glissez pour entourer des cartes · Espace + glisser pour déplacer'
+      : tool === "line"
+        ? '<span class="hint-drag" aria-hidden="true">↗</span> Tirez d’une carte vers une autre pour les relier'
+        : '<span class="hint-drag" aria-hidden="true">✎</span> Dessinez librement · double-cliquez un tracé pour le supprimer';
 }
 
 function addNote(position = viewportCenter()) {
@@ -2174,8 +2177,9 @@ function beginMarquee(event) {
   const box = document.createElement("div");
   box.className = "selection-marquee";
   canvas.append(box);
-  marqueeGesture = { start, box, pointerId: event.pointerId, additive: event.ctrlKey || event.metaKey };
+  marqueeGesture = { start, box, pointerId: event.pointerId, additive: event.ctrlKey || event.metaKey || event.shiftKey };
   viewport.setPointerCapture(event.pointerId);
+  viewport.classList.add("is-marquee-select");
   event.preventDefault();
   return true;
 }
@@ -2203,7 +2207,17 @@ function endMarquee() {
   };
   box.remove();
   marqueeGesture = null;
-  if (rect.width < 4 && rect.height < 4) return;
+  viewport.classList.remove("is-marquee-select");
+  if (rect.width < 4 && rect.height < 4) {
+    if (!additive) {
+      clearCardSelection();
+      if (selectedVectorId) {
+        selectedVectorId = null;
+        renderVectorItems();
+      }
+    }
+    return;
+  }
   const hits = new Set(additive ? selectedCardIds : []);
   board.items.forEach((item) => {
     if (["connector", "drawing"].includes(item.type)) return;
@@ -2219,7 +2233,11 @@ function endMarquee() {
 }
 
 function beginPan(event) {
-  if (event.button !== 0 || event.target.closest(".board-card, button, a, input, textarea, select") || (activeTool !== "select" && !spacePressed)) return false;
+  if (event.button !== 0 && event.button !== 1) return false;
+  if (event.button === 0 && !spacePressed && event.pointerType !== "touch") return false;
+  if (event.pointerType === "touch" && !spacePressed && event.button === 0
+    && event.target.closest(".board-card, .vector-hit-area, .connector-anchor-handle")) return false;
+  if (event.target.closest("button, a, input, textarea, select, audio, [contenteditable='true']")) return false;
   panGesture = { x: event.clientX, y: event.clientY, scrollX: viewport.scrollLeft, scrollY: viewport.scrollTop };
   viewport.setPointerCapture(event.pointerId);
   viewport.classList.add("is-panning");
@@ -3429,12 +3447,16 @@ function initEvents() {
 
   viewport.addEventListener("pointerdown", (event) => {
     if (marqueeGesture) return;
-    if (activeTool !== "select" && !spacePressed) {
+    if (event.button === 1 || (event.button === 0 && spacePressed)) {
+      beginPan(event);
+      return;
+    }
+    if (activeTool !== "select") {
       beginVector(event);
       return;
     }
-    if (activeTool === "select" && event.button === 0 && event.shiftKey
-      && !event.target.closest(".board-card, .vector-hit-area, .connector-anchor-handle, button, input, textarea, select, a")) {
+    const onCanvasControl = event.target.closest(".board-card, .vector-hit-area, .connector-anchor-handle, button, input, textarea, select, a, audio");
+    if (event.button === 0 && event.pointerType !== "touch" && !onCanvasControl) {
       beginMarquee(event);
       return;
     }
@@ -3538,7 +3560,10 @@ function initEvents() {
     }
     if (!remoteSession) return;
     const editing = isTextEditingTarget(event.target);
-    if (event.code === "Space" && !editing) spacePressed = true;
+    if (event.code === "Space" && !editing) {
+      spacePressed = true;
+      viewport.classList.add("is-space-ready");
+    }
     if ((event.key === "Delete" || event.key === "Backspace") && !editing) {
       if (selectedVectorId) {
         event.preventDefault();
@@ -3574,8 +3599,15 @@ function initEvents() {
       }
     }
   });
-  window.addEventListener("keyup", (event) => { if (event.code === "Space") spacePressed = false; });
-  window.addEventListener("blur", () => { spacePressed = false; });
+  window.addEventListener("keyup", (event) => {
+    if (event.code !== "Space") return;
+    spacePressed = false;
+    viewport.classList.remove("is-space-ready");
+  });
+  window.addEventListener("blur", () => {
+    spacePressed = false;
+    viewport.classList.remove("is-space-ready");
+  });
   window.addEventListener("resize", () => {
     closeCardMenu();
     updateZoom();
@@ -3636,6 +3668,7 @@ async function start() {
     showToast("Le navigateur ne permet pas l’enregistrement local. Vos modifications ne seront pas conservées.");
   }
   initEvents();
+  setTool(activeTool);
   itemsUI = initItemsUI({
     api: apiRequest, session: () => remoteSession, records: allStoredBoards,
     version: (id) => remoteVersions.get(id) || 0,
