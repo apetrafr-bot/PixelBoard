@@ -46,6 +46,24 @@ test("closed IDB connection reopens once and writes latest records without dupli
   assert.equal((await store.read())[0].title, "current");
 });
 
+test("closing connection retry depends on InvalidStateError name, not localized browser message", async () => {
+  for (const message of [
+    "Failed to execute 'transaction' on 'IDBDatabase': The database connection is closing.",
+    "Failed to execute 'transaction' on 'IDBDatabase': La database connection is closing.",
+    "The database connection is closed.",
+  ]) {
+    const fake = fakeIDB(), store = createLocalStore(fake.idb, "db", "boards");
+    fake.fail(new DOMException(message, "InvalidStateError"));
+    await store.write([{ id: "board", title: "recovered" }]);
+    assert.equal(fake.opens, 2);
+    assert.equal(fake.rows.get("board").title, "recovered");
+    fake.fail(new Error(message));
+    await assert.rejects(store.write([{ id: "board", title: "not saved" }]), { name: "Error", message });
+    assert.equal(fake.opens, 2, "message alone must not trigger unsafe replay");
+    assert.equal(fake.rows.get("board").title, "recovered");
+  }
+});
+
 test("versionchange/close invalidate connections; concurrent writes retain invocation order", async () => {
   const fake = fakeIDB(), store = createLocalStore(fake.idb, "db", "boards");
   await store.open(); fake.connections[0].onversionchange();
