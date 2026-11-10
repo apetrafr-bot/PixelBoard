@@ -261,6 +261,22 @@
       </div>
     </dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="card-menu" id="card-menu" role="menu" aria-label="Actions des cartes sélectionnées" hidden>
+      <p class="card-menu-summary">Aucune carte sélectionnée</p>
+      <button type="button" role="menuitem" data-menu-action="copy"><span>Copier</span><span class="card-menu-key">Ctrl C</span></button>
+      <button type="button" role="menuitem" data-menu-action="cut"><span>Couper</span><span class="card-menu-key">Ctrl X</span></button>
+      <button type="button" role="menuitem" data-menu-action="paste"><span>Coller</span><span class="card-menu-key">Ctrl V</span></button>
+      <button type="button" role="menuitem" data-menu-action="duplicate"><span>Dupliquer</span><span class="card-menu-key">Ctrl D</span></button>
+      <button type="button" role="menuitem" data-menu-action="delete" class="is-danger"><span>Supprimer</span><span class="card-menu-key">Suppr</span></button>
+      <div class="card-menu-sep" role="separator"></div>
+      <p class="card-menu-label">Taille du texte</p>
+      <div class="card-menu-sizes">
+        <button type="button" data-font-step="-1" aria-label="Réduire la taille du texte sélectionné" title="Réduire la taille du texte sélectionné">A−</button>
+        <button type="button" data-font-step="0" aria-label="Revenir à la taille de texte normale" title="Taille normale">Normal</button>
+        <button type="button" data-font-step="1" aria-label="Agrandir la taille du texte sélectionné" title="Agrandir la taille du texte sélectionné">A+</button>
+      </div>
+      <p class="card-menu-hint">Sélectionnez du texte dans une note, puis A− / A+.</p>
+    </div>
     <script type="module" src="/src/main.js"></script>
     <aside id="items-panel" class="items-panel" aria-label="Catalogue d’items Unity" hidden>
       <header class="items-heading"><h2>Items Unity</h2><button id="items-close" type="button" class="small-action">Fermer</button></header>

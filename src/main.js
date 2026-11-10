@@ -37,6 +37,10 @@ let members = [];
 let boardRecords = new Map();
 let activeTool = "select";
 let selectedVectorId = null;
+let selectedCardIds = new Set();
+let cardClipboard = null;
+let pasteCount = 0;
+let marqueeGesture = null;
 let saveTimer;
 let toastTimer;
 let lastZIndex = 5;
@@ -512,14 +516,366 @@ function iconButton(label, title, action, className = "") {
   return button;
 }
 
-function focusSelectedCard(card) {
+const NOTE_HTML_TAGS = new Set(["BR", "DIV", "P", "SPAN", "B", "STRONG", "I", "EM", "U", "UL", "OL", "LI"]);
+const NOTE_FONT_STEPS = [9, 11, 13, 16, 20, 26];
+const NOTE_DEFAULT_FONT_SIZE = 11;
+
+const escapeNoteHtml = (value) => String(value ?? "").replace(/[&<>"]/g, (character) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
+}[character]));
+
+function noteHtmlFromText(text) {
+  return String(text ?? "").split("\n").map(escapeNoteHtml).join("<br>");
+}
+
+function sanitizeNoteHtml(html) {
+  const template = document.createElement("template");
+  template.innerHTML = String(html ?? "");
+  const clean = (parent) => {
+    for (const child of [...parent.childNodes]) {
+      if (child.nodeType === Node.TEXT_NODE) continue;
+      if (child.nodeType !== Node.ELEMENT_NODE) { child.remove(); continue; }
+      clean(child);
+      if (!NOTE_HTML_TAGS.has(child.tagName)) { child.replaceWith(...child.childNodes); continue; }
+      for (const attribute of [...child.attributes]) {
+        const keepStyle = child.tagName === "SPAN" && attribute.name === "style";
+        if (!keepStyle) child.removeAttribute(attribute.name);
+      }
+      if (child.tagName === "SPAN") {
+        const size = child.style.fontSize;
+        child.removeAttribute("style");
+        if (/^\d{1,2}(\.\d+)?px$/.test(size)) child.style.fontSize = size;
+      }
+    }
+  };
+  clean(template.content);
+  return template.innerHTML;
+}
+
+function noteBodyHtml(item) {
+  if (typeof item.bodyHtml === "string" && item.bodyHtml) return sanitizeNoteHtml(item.bodyHtml);
+  return noteHtmlFromText(item.body);
+}
+
+function syncNoteBody(item, editor) {
+  const html = sanitizeNoteHtml(editor.innerHTML);
+  item.bodyHtml = html;
+  item.body = editor.innerText.replace(/\r/g, "");
+}
+
+function nextFontStep(current, direction) {
+  if (direction > 0) return NOTE_FONT_STEPS.find((size) => size > current + .5) ?? NOTE_FONT_STEPS.at(-1);
+  return [...NOTE_FONT_STEPS].reverse().find((size) => size < current - .5) ?? NOTE_FONT_STEPS[0];
+}
+
+function wrapRangeFontSize(range, size, selection) {
+  const container = range.commonAncestorContainer;
+  const root = container.nodeType === Node.TEXT_NODE ? container.parentNode : container;
+  if (!root) return [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeValue && range.intersectsNode(node)) textNodes.push(node);
+  }
+  const spans = [];
+  for (const textNode of textNodes) {
+    const length = textNode.nodeValue.length;
+    const start = textNode === range.startContainer ? range.startOffset : 0;
+    const end = textNode === range.endContainer ? range.endOffset : length;
+    if (start >= end) continue;
+    if (end < length) textNode.splitText(end);
+    const target = start > 0 ? textNode.splitText(start) : textNode;
+    const span = document.createElement("span");
+    span.style.fontSize = `${size}px`;
+    target.replaceWith(span);
+    span.append(target);
+    spans.push(span);
+  }
+  if (spans.length && selection) {
+    const restored = document.createRange();
+    const first = spans[0];
+    const last = spans.at(-1);
+    restored.setStart(first.firstChild ?? first, 0);
+    restored.setEnd(last.firstChild ?? last, last.firstChild?.length ?? 0);
+    selection.removeAllRanges();
+    selection.addRange(restored);
+  }
+  return spans;
+}
+
+function applyNoteFontStep(editor, direction, savedRange = null) {
+  if (!editor) return false;
+  const card = editor.closest(".board-card");
+  const item = board.items.find((candidate) => candidate.id === card?.dataset.id);
+  if (!item) return false;
+  const selection = window.getSelection();
+  let range = savedRange;
+  if (!range || !editor.contains(range.commonAncestorContainer)) {
+    if (selection?.rangeCount && editor.contains(selection.anchorNode)) range = selection.getRangeAt(0).cloneRange();
+    else { range = document.createRange(); range.selectNodeContents(editor); }
+  }
+  if (range.collapsed) range.selectNodeContents(editor);
+  const anchor = range.startContainer.nodeType === Node.ELEMENT_NODE
+    ? range.startContainer : range.startContainer.parentElement;
+  const current = parseFloat(getComputedStyle(anchor || editor).fontSize) || NOTE_DEFAULT_FONT_SIZE;
+  const size = direction === 0 ? NOTE_DEFAULT_FONT_SIZE : nextFontStep(current, direction);
+  snapshotState();
+  wrapRangeFontSize(range, size, selection);
+  syncNoteBody(item, editor);
+  editor.focus({ preventScroll: true });
+  scheduleSave();
+  return true;
+}
+
+function selectedCards() {
+  return board.items.filter((item) => selectedCardIds.has(item.id) && !["connector", "drawing"].includes(item.type));
+}
+
+function applyCardSelection() {
+  canvas.querySelectorAll(".board-card").forEach((card) => {
+    card.classList.toggle("is-selected", selectedCardIds.has(card.dataset.id));
+  });
+}
+
+function clearCardSelection() {
+  if (!selectedCardIds.size) return;
+  selectedCardIds = new Set();
+  applyCardSelection();
+}
+
+function focusSelectedCard(card, event = null) {
+  if (!card) return;
   if (selectedVectorId) {
     selectedVectorId = null;
     renderVectorItems();
   }
-  card.style.zIndex = String(++lastZIndex);
-  canvas.querySelectorAll(".board-card.is-selected").forEach((selected) => selected.classList.remove("is-selected"));
-  card.classList.add("is-selected");
+  const id = card.dataset.id;
+  const additive = Boolean(event && (event.ctrlKey || event.metaKey || event.shiftKey));
+  if (additive) {
+    if (selectedCardIds.has(id)) selectedCardIds.delete(id);
+    else selectedCardIds.add(id);
+  } else if (!selectedCardIds.has(id)) {
+    selectedCardIds = new Set([id]);
+  }
+  applyCardSelection();
+  if (selectedCardIds.has(id)) card.style.zIndex = String(++lastZIndex);
+}
+
+function isTextEditingTarget(target) {
+  return Boolean(target?.closest?.("input, textarea, select, [contenteditable='true']"));
+}
+
+function itemWorldRect(item) {
+  if (item.type === "drawing") {
+    const points = item.points?.length ? item.points : [{ x: item.x1 ?? 0, y: item.y1 ?? 0 }];
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+  }
+  if (item.type === "connector") {
+    const start = cardAnchor(item.fromId, item.fromAnchor) || { x: item.x1 ?? 0, y: item.y1 ?? 0 };
+    const end = cardAnchor(item.toId, item.toAnchor) || { x: item.x2 ?? 0, y: item.y2 ?? 0 };
+    return {
+      x: Math.min(start.x, end.x), y: Math.min(start.y, end.y),
+      width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y),
+    };
+  }
+  const card = canvas.querySelector(`[data-id="${CSS.escape(item.id)}"]`);
+  return {
+    x: item.x ?? 0, y: item.y ?? 0,
+    width: Number.isFinite(item.width) ? item.width : card?.offsetWidth ?? 260,
+    height: Number.isFinite(item.height) ? item.height : card?.offsetHeight ?? 180,
+  };
+}
+
+function selectionBounds(items) {
+  const rects = items.map(itemWorldRect);
+  if (!rects.length) return { x: 0, y: 0, width: 0, height: 0 };
+  const left = Math.min(...rects.map((rect) => rect.x));
+  const top = Math.min(...rects.map((rect) => rect.y));
+  const right = Math.max(...rects.map((rect) => rect.x + rect.width));
+  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function deleteItems(ids, { announce = true } = {}) {
+  if (!ids.size) return 0;
+  const before = board.items.length;
+  board.items = board.items.filter((item) => {
+    if (ids.has(item.id)) return false;
+    if (item.type === "connector" && (ids.has(item.fromId) || ids.has(item.toId))) return false;
+    return true;
+  });
+  const removed = before - board.items.length;
+  ids.forEach((id) => selectedCardIds.delete(id));
+  if (selectedVectorId && ids.has(selectedVectorId)) selectedVectorId = null;
+  renderBoard();
+  scheduleSave();
+  if (announce && removed) showToast(`${removed} élément${removed > 1 ? "s" : ""} supprimé${removed > 1 ? "s" : ""}.`);
+  return removed;
+}
+
+function deleteSelection() {
+  const ids = new Set(selectedCardIds);
+  if (selectedVectorId) ids.add(selectedVectorId);
+  if (!ids.size) return false;
+  snapshotState();
+  return deleteItems(ids) > 0;
+}
+
+function copySelection({ cut = false, silent = false } = {}) {
+  const cards = selectedCards();
+  const vector = board.items.find((item) => item.id === selectedVectorId && ["connector", "drawing"].includes(item.type));
+  if (!cards.length && !vector) return false;
+  const copied = [...cards];
+  if (!vector && cards.length) {
+    const ids = new Set(cards.map((item) => item.id));
+    board.items
+      .filter((item) => item.type === "connector" && ids.has(item.fromId) && ids.has(item.toId))
+      .forEach((item) => copied.push(item));
+  }
+  if (vector) copied.push(vector);
+  cardClipboard = {
+    items: structuredClone(copied),
+    fromBoardId: board.id,
+  };
+  pasteCount = 0;
+  if (cut) {
+    snapshotState();
+    const ids = new Set(copied.map((item) => item.id));
+    deleteItems(ids, { announce: false });
+  }
+  if (!silent) {
+    const count = copied.length;
+    showToast(`${count} élément${count > 1 ? "s" : ""} ${cut ? "coupé" : "copié"}${count > 1 ? "s" : ""}.${cut ? "" : " Collez avec Ctrl+V."}`);
+  }
+  return true;
+}
+
+function cloneBoardSubtree(sourceId, copies, parentId) {
+  const source = sourceId === board.id ? board : boardRecords.get(sourceId);
+  if (!source) return null;
+  if (copies.has(sourceId)) return copies.get(sourceId);
+  const copy = structuredClone(normalizeBoard(source));
+  copy.id = newId();
+  copy.parentId = parentId;
+  copy.title = `${copy.title || "Tableau"} (copie)`;
+  copies.set(sourceId, copy);
+  copy.items = copy.items.map((item) => {
+    const clone = structuredClone(item);
+    clone.id = newId();
+    if (clone.type === "board" && clone.boardId) {
+      const nested = cloneBoardSubtree(clone.boardId, copies, copy.id);
+      if (nested) clone.boardId = nested.id;
+    }
+    if (clone.type === "todo" && Array.isArray(clone.entries)) {
+      clone.entries.forEach((entry) => { if (entry.id) entry.id = newId(); });
+    }
+    return clone;
+  });
+  return copy;
+}
+
+function pasteClipboard() {
+  if (!cardClipboard?.items.length) return false;
+  snapshotState();
+  pasteCount += 1;
+  const copies = new Map();
+  const idMap = new Map();
+  const items = structuredClone(cardClipboard.items);
+  items.forEach((item) => idMap.set(item.id, newId()));
+  for (const item of items) {
+    if (item.type === "board" && item.boardId) {
+      const copiedBoard = cloneBoardSubtree(item.boardId, copies, board.id);
+      if (copiedBoard) item.boardId = copiedBoard.id;
+    }
+    if (item.type === "todo" && Array.isArray(item.entries)) {
+      item.entries.forEach((entry) => { entry.id = newId(); });
+    }
+  }
+  const bounds = selectionBounds(items);
+  const center = viewportCenter();
+  const step = 26 * pasteCount;
+  const dx = Math.round(center.x - (bounds.x + bounds.width / 2) + step);
+  const dy = Math.round(center.y - (bounds.y + bounds.height / 2) + step);
+  const pasted = [];
+  for (const item of items) {
+    item.id = idMap.get(item.id);
+    item.z = ++lastZIndex;
+    if (item.type === "connector") {
+      item.fromId = idMap.get(item.fromId) ?? item.fromId;
+      item.toId = idMap.get(item.toId) ?? item.toId;
+      item.x1 = (item.x1 ?? 0) + dx;
+      item.y1 = (item.y1 ?? 0) + dy;
+      item.x2 = (item.x2 ?? 0) + dx;
+      item.y2 = (item.y2 ?? 0) + dy;
+    } else if (item.type === "drawing") {
+      item.points = (item.points || []).map((point) => ({ x: point.x + dx, y: point.y + dy }));
+    } else {
+      item.x = (item.x ?? 0) + dx;
+      item.y = (item.y ?? 0) + dy;
+    }
+    pasted.push(item);
+  }
+  board.items.push(...pasted);
+  selectedCardIds = new Set(pasted.filter((item) => !["connector", "drawing"].includes(item.type)).map((item) => item.id));
+  selectedVectorId = null;
+  copies.forEach((record) => boardRecords.set(record.id, record));
+  renderBoard();
+  scheduleSave([...copies.values()]);
+  const count = pasted.length;
+  showToast(`${count} élément${count > 1 ? "s" : ""} collé${count > 1 ? "s" : ""}.`);
+  return true;
+}
+
+function duplicateSelection() {
+  if (!copySelection({ silent: true })) return false;
+  return pasteClipboard();
+}
+
+let cardMenuContext = null;
+
+function noteEditorForCard(card) {
+  return card?.querySelector(".note-body[contenteditable='true']") ?? null;
+}
+
+function savedTextRange(editor) {
+  if (!editor) return null;
+  const selection = window.getSelection();
+  if (selection?.rangeCount && editor.contains(selection.anchorNode) && editor.contains(selection.focusNode)) {
+    return selection.getRangeAt(0).cloneRange();
+  }
+  return null;
+}
+
+function openCardMenu(clientX, clientY, card) {
+  const menu = $("#card-menu");
+  if (!menu) return;
+  const noteEditor = noteEditorForCard(card);
+  cardMenuContext = { card, noteEditor, range: savedTextRange(noteEditor) };
+  menu.querySelector('[data-menu-action="copy"]').disabled = !selectedCardIds.size && !selectedVectorId;
+  menu.querySelector('[data-menu-action="cut"]').disabled = !selectedCardIds.size && !selectedVectorId;
+  menu.querySelector('[data-menu-action="duplicate"]').disabled = !selectedCardIds.size && !selectedVectorId;
+  menu.querySelector('[data-menu-action="delete"]').disabled = !selectedCardIds.size && !selectedVectorId;
+  menu.querySelector('[data-menu-action="paste"]').disabled = !cardClipboard?.items.length;
+  menu.querySelectorAll("[data-font-step]").forEach((button) => { button.disabled = !noteEditor; });
+  const count = selectedCardIds.size;
+  const summary = selectedVectorId ? "Connecteur ou dessin sélectionné"
+    : count > 1 ? `${count} cartes sélectionnées`
+    : count === 1 ? "1 carte sélectionnée"
+    : "Aucune carte sélectionnée";
+  menu.querySelector(".card-menu-summary").textContent = summary;
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(clientX, window.innerWidth - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(clientY, window.innerHeight - rect.height - 8))}px`;
+  menu.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+}
+
+function closeCardMenu() {
+  const menu = $("#card-menu");
+  if (menu) menu.hidden = true;
+  cardMenuContext = null;
 }
 
 function addDeleteControl(actions) {
@@ -529,6 +885,7 @@ function addDeleteControl(actions) {
 function buildCard(item) {
   const card = document.createElement("article");
   card.className = `board-card ${item.type}-card ${item.type === "note" ? `note-${safeColor(item.color)}` : ""}`;
+  if (selectedCardIds.has(item.id)) card.classList.add("is-selected");
   card.dataset.id = item.id;
   card.style.left = `${item.x}px`;
   card.style.top = `${item.y}px`;
@@ -632,7 +989,11 @@ function buildCard(item) {
     card.append(handle);
   }
 
-  card.addEventListener("pointerdown", () => focusSelectedCard(card));
+  card.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest("button, input, textarea, select, [contenteditable='true']")) focusSelectedCard(card);
+    else focusSelectedCard(card, event);
+  });
   grip.addEventListener("keydown", (event) => moveCardByKeyboard(event, card, item));
   return card;
 }
@@ -792,18 +1153,43 @@ function renderNoteCard(card, item) {
   title.placeholder = "Titre de la note";
   title.setAttribute("aria-label", "Titre de la note");
   title.maxLength = 100;
-  const body = document.createElement("textarea");
+  const body = document.createElement("div");
   body.className = "note-body";
-  body.value = item.body || "";
-  body.placeholder = "Écrivez votre idée…";
-  body.setAttribute("aria-label", "Contenu de la note");
-  body.maxLength = 5000;
+  body.contentEditable = "true";
+  body.spellcheck = true;
+  body.dataset.placeholder = "Écrivez votre idée…";
+  body.setAttribute("role", "textbox");
+  body.setAttribute("aria-multiline", "true");
+  body.setAttribute("aria-label", "Contenu de la note. Sélectionnez du texte puis utilisez Ctrl+Maj+. ou Ctrl+Maj+, pour changer sa taille.");
+  body.innerHTML = noteBodyHtml(item);
   const mark = document.createElement("div");
   mark.className = `note-color-mark ${safeColor(item.color)}`;
   title.addEventListener("focus", snapshotState, { once: true });
   title.addEventListener("input", () => { item.title = title.value; scheduleSave(); });
   body.addEventListener("focus", snapshotState, { once: true });
-  body.addEventListener("input", () => { item.body = body.value; scheduleSave(); });
+  body.addEventListener("input", () => {
+    if (!body.textContent && body.innerHTML === "<br>") body.innerHTML = "";
+    syncNoteBody(item, body);
+    scheduleSave();
+  });
+  body.addEventListener("paste", (event) => {
+    const text = event.clipboardData?.getData("text/plain");
+    if (text == null) return;
+    event.preventDefault();
+    document.execCommand("insertText", false, text);
+    syncNoteBody(item, body);
+    scheduleSave();
+  });
+  body.addEventListener("keydown", (event) => {
+    if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
+    if (event.code === "Period" || event.key === ">" || event.key === ".") {
+      event.preventDefault();
+      applyNoteFontStep(body, 1);
+    } else if (event.code === "Comma" || event.key === "<" || event.key === ",") {
+      event.preventDefault();
+      applyNoteFontStep(body, -1);
+    }
+  });
   content.append(title, body, mark);
   card.append(content);
 }
@@ -1296,6 +1682,10 @@ function prepareVectorSelection(vector, item, label) {
 
 function selectVector(vectorId) {
   selectedVectorId = vectorId;
+  if (selectedCardIds.size) {
+    selectedCardIds = new Set();
+    applyCardSelection();
+  }
   renderVectorItems();
   connectorLayer.querySelector(`.vector-hit-area[data-id="${CSS.escape(vectorId)}"]`)?.focus();
 }
@@ -1383,6 +1773,8 @@ function anchorAtPointer(card, event) {
 
 function renderBoard() {
   if (!board.items.some((item) => item.id === selectedVectorId)) selectedVectorId = null;
+  const itemIds = new Set(board.items.map((item) => item.id));
+  selectedCardIds = new Set([...selectedCardIds].filter((id) => itemIds.has(id)));
   canvas.querySelectorAll("audio").forEach((player) => { player.pause(); URL.revokeObjectURL(player.src); player.removeAttribute("src"); player.load(); });
   canvas.querySelectorAll("img").forEach((image) => URL.revokeObjectURL(image.src));
   cardResizeObserver?.disconnect();
@@ -1630,6 +2022,9 @@ function openBoard(boardId) {
   const next = boardRecords.get(boardId);
   if (!next || isCatalogue(next)) return;
   board = normalizeBoard(next);
+  selectedCardIds = new Set();
+  selectedVectorId = null;
+  closeCardMenu();
   renderBoard();
   viewport.scrollLeft = board.viewX;
   viewport.scrollTop = board.viewY;
@@ -1698,30 +2093,55 @@ async function addMediaFiles(files, clientX, clientY) {
 }
 
 function startCardDrag(event, grip) {
-  if (event.button !== 0 || event.target.closest("button, input, select")) return false;
+  if (event.button !== 0 || event.target.closest("button, input, textarea, select, a, audio, [contenteditable='true'], .card-resize")) return false;
   const card = grip.closest(".board-card");
   const item = board.items.find((candidate) => candidate.id === card.dataset.id);
   if (!item) return false;
-  snapshotState();
+  if (!selectedCardIds.has(item.id)) {
+    selectedCardIds = new Set([item.id]);
+    applyCardSelection();
+  }
+  const moving = selectedCards();
+  if (!moving.some((candidate) => candidate.id === item.id)) moving.push(item);
+  const origins = moving.map((candidate) => ({
+    item: candidate,
+    card: canvas.querySelector(`[data-id="${CSS.escape(candidate.id)}"]`),
+    x: candidate.x,
+    y: candidate.y,
+  }));
   const startX = event.clientX;
   const startY = event.clientY;
-  const originX = item.x;
-  const originY = item.y;
+  let snapshotTaken = false;
   grip.setPointerCapture(event.pointerId);
   event.preventDefault();
   const move = (moveEvent) => {
-    item.x = originX + (moveEvent.clientX - startX) / board.zoom;
-    item.y = originY + (moveEvent.clientY - startY) / board.zoom;
-    card.style.left = `${item.x}px`;
-    card.style.top = `${item.y}px`;
-    ensureItemBounds(item);
+    const dx = (moveEvent.clientX - startX) / board.zoom;
+    const dy = (moveEvent.clientY - startY) / board.zoom;
+    if (!snapshotTaken && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+      snapshotState();
+      snapshotTaken = true;
+    }
+    if (!snapshotTaken) return;
+    origins.forEach(({ item: candidate, card: targetCard, x, y }) => {
+      candidate.x = x + dx;
+      candidate.y = y + dy;
+      if (targetCard) {
+        targetCard.style.left = `${candidate.x}px`;
+        targetCard.style.top = `${candidate.y}px`;
+      }
+      ensureItemBounds(candidate);
+    });
     updateCardConnectors();
   };
   const stop = () => {
     grip.removeEventListener("pointermove", move);
     grip.removeEventListener("pointerup", stop);
     grip.removeEventListener("pointercancel", stop);
-    scheduleSave();
+    if (snapshotTaken) scheduleSave();
+    else if (!event.ctrlKey && !event.metaKey && !event.shiftKey && selectedCardIds.size > 1) {
+      selectedCardIds = new Set([item.id]);
+      applyCardSelection();
+    }
   };
   grip.addEventListener("pointermove", move);
   grip.addEventListener("pointerup", stop, { once: true });
@@ -1733,6 +2153,55 @@ function ensureItemBounds(item) {
   if (item.x + board.originX > board.worldWidth - 600) board.worldWidth += 1800;
   if (item.y + board.originY > board.worldHeight - 500) board.worldHeight += 1800;
   updateZoom();
+}
+
+function beginMarquee(event) {
+  const start = worldPoint(event);
+  const box = document.createElement("div");
+  box.className = "selection-marquee";
+  canvas.append(box);
+  marqueeGesture = { start, box, pointerId: event.pointerId, additive: event.ctrlKey || event.metaKey };
+  viewport.setPointerCapture(event.pointerId);
+  event.preventDefault();
+  return true;
+}
+
+function moveMarquee(event) {
+  if (!marqueeGesture) return;
+  const point = worldPoint(event);
+  const x = Math.min(marqueeGesture.start.x, point.x);
+  const y = Math.min(marqueeGesture.start.y, point.y);
+  const width = Math.abs(point.x - marqueeGesture.start.x);
+  const height = Math.abs(point.y - marqueeGesture.start.y);
+  Object.assign(marqueeGesture.box.style, {
+    left: `${x}px`, top: `${y}px`, width: `${width}px`, height: `${height}px`,
+  });
+}
+
+function endMarquee() {
+  if (!marqueeGesture) return;
+  const { box, additive } = marqueeGesture;
+  const rect = {
+    x: parseFloat(box.style.left) || 0,
+    y: parseFloat(box.style.top) || 0,
+    width: parseFloat(box.style.width) || 0,
+    height: parseFloat(box.style.height) || 0,
+  };
+  box.remove();
+  marqueeGesture = null;
+  if (rect.width < 4 && rect.height < 4) return;
+  const hits = new Set(additive ? selectedCardIds : []);
+  board.items.forEach((item) => {
+    if (["connector", "drawing"].includes(item.type)) return;
+    const bounds = itemWorldRect(item);
+    const overlaps = bounds.x < rect.x + rect.width && bounds.x + bounds.width > rect.x
+      && bounds.y < rect.y + rect.height && bounds.y + bounds.height > rect.y;
+    if (overlaps) hits.add(item.id);
+  });
+  selectedCardIds = hits;
+  selectedVectorId = null;
+  applyCardSelection();
+  renderVectorItems();
 }
 
 function beginPan(event) {
@@ -2838,12 +3307,10 @@ function initEvents() {
   });
 
   canvas.addEventListener("pointerdown", (event) => {
-    if (activeTool === "line") return;
-    const handle = event.target.closest("[data-drag-handle]");
-    if (handle) {
-      startCardDrag(event, handle);
-      return;
-    }
+    if (activeTool !== "select" || spacePressed || event.button !== 0) return;
+    const card = event.target.closest(".board-card");
+    if (!card) return;
+    startCardDrag(event, card);
   });
   canvas.addEventListener("click", (event) => {
     const button = event.target.closest("[data-action]");
@@ -2876,15 +3343,90 @@ function initEvents() {
     }
   });
 
+  viewport.addEventListener("contextmenu", (event) => {
+    const vector = event.target.closest?.(".vector-hit-area");
+    if (vector) {
+      event.preventDefault();
+      selectVector(vector.dataset.id);
+      openCardMenu(event.clientX, event.clientY, null);
+      return;
+    }
+    const card = event.target.closest(".board-card");
+    const editable = event.target.closest("input, textarea, select, [contenteditable='true']");
+    const selection = window.getSelection();
+    const inNote = Boolean(selection && !selection.isCollapsed && selection.anchorNode?.parentElement?.closest?.(".note-body"));
+    if (editable && !inNote) return;
+    event.preventDefault();
+    if (card) {
+      if (selectedVectorId) {
+        selectedVectorId = null;
+        renderVectorItems();
+      }
+      if (!selectedCardIds.has(card.dataset.id)) {
+        selectedCardIds = new Set([card.dataset.id]);
+        applyCardSelection();
+      }
+      openCardMenu(event.clientX, event.clientY, card);
+    } else {
+      clearCardSelection();
+      if (selectedVectorId) {
+        selectedVectorId = null;
+        renderVectorItems();
+      }
+      openCardMenu(event.clientX, event.clientY, null);
+    }
+  });
+  const cardMenu = $("#card-menu");
+  cardMenu.addEventListener("click", (event) => {
+    const fontButton = event.target.closest("[data-font-step]");
+    if (fontButton && !fontButton.disabled) {
+      const context = cardMenuContext;
+      if (context) applyNoteFontStep(context.noteEditor, Number(fontButton.dataset.fontStep), context.range);
+      closeCardMenu();
+      return;
+    }
+    const action = event.target.closest("[data-menu-action]");
+    if (!action || action.disabled) return;
+    const command = action.dataset.menuAction;
+    closeCardMenu();
+    if (command === "copy") copySelection();
+    else if (command === "cut") copySelection({ cut: true });
+    else if (command === "paste") pasteClipboard();
+    else if (command === "duplicate") duplicateSelection();
+    else if (command === "delete") deleteSelection();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    const menu = $("#card-menu");
+    if (menu && !menu.hidden && !event.target.closest("#card-menu")) closeCardMenu();
+  });
+
   viewport.addEventListener("pointerdown", (event) => {
-    if (activeTool !== "select" && !spacePressed) beginVector(event);
-    else beginPan(event);
+    if (marqueeGesture) return;
+    if (activeTool !== "select" && !spacePressed) {
+      beginVector(event);
+      return;
+    }
+    if (activeTool === "select" && event.button === 0 && event.shiftKey
+      && !event.target.closest(".board-card, .vector-hit-area, .connector-anchor-handle, button, input, textarea, select, a")) {
+      beginMarquee(event);
+      return;
+    }
+    if (event.button === 0 && !event.target.closest(".board-card, .vector-hit-area, .connector-anchor-handle")) {
+      clearCardSelection();
+      if (selectedVectorId) {
+        selectedVectorId = null;
+        renderVectorItems();
+      }
+    }
+    beginPan(event);
   });
   viewport.addEventListener("pointermove", (event) => {
+    if (marqueeGesture) moveMarquee(event);
     if (panGesture) panMove(event);
     if (drawingGesture || connectionGesture || connectorResizeGesture) moveVector(event);
   });
   const endViewportPointer = (event) => {
+    if (marqueeGesture) endMarquee();
     if (panGesture) {
       panGesture = null;
       viewport.classList.remove("is-panning");
@@ -2959,22 +3501,56 @@ function initEvents() {
     adjustZoom(event.deltaY < 0 ? .08 : -.08, event.clientX - rect.left, event.clientY - rect.top);
   }, { passive: false });
   window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeCardMenu();
+      clearCardSelection();
+      if (selectedVectorId) {
+        selectedVectorId = null;
+        renderVectorItems();
+      }
+    }
     if (!remoteSession) return;
-    if (event.code === "Space" && !event.target.matches("input,textarea,[contenteditable=true]")) spacePressed = true;
-    if ((event.key === "Delete" || event.key === "Backspace") && selectedVectorId && !event.target.matches("input,textarea,[contenteditable=true]")) {
-      event.preventDefault();
-      deleteSelectedVector();
-      return;
+    const editing = isTextEditingTarget(event.target);
+    if (event.code === "Space" && !editing) spacePressed = true;
+    if ((event.key === "Delete" || event.key === "Backspace") && !editing) {
+      if (selectedVectorId) {
+        event.preventDefault();
+        deleteSelectedVector();
+        return;
+      }
+      if (selectedCardIds.size) {
+        event.preventDefault();
+        deleteSelection();
+        return;
+      }
     }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
-      event.preventDefault();
-      if (event.shiftKey) handleRedo(); else handleUndo();
+    if ((event.ctrlKey || event.metaKey) && !editing) {
+      const key = event.key.toLowerCase();
+      if (key === "c" && copySelection()) event.preventDefault();
+      else if (key === "x" && copySelection({ cut: true })) event.preventDefault();
+      else if (key === "v" && pasteClipboard()) event.preventDefault();
+      else if (key === "d" && duplicateSelection()) event.preventDefault();
+      else if (key === "a") {
+        event.preventDefault();
+        selectedVectorId = null;
+        selectedCardIds = new Set(board.items
+          .filter((item) => !["connector", "drawing"].includes(item.type))
+          .map((item) => item.id));
+        applyCardSelection();
+        renderVectorItems();
+      } else if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) handleRedo(); else handleUndo();
+      } else if (key === "y") {
+        event.preventDefault();
+        handleRedo();
+      }
     }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") { event.preventDefault(); handleRedo(); }
   });
   window.addEventListener("keyup", (event) => { if (event.code === "Space") spacePressed = false; });
   window.addEventListener("blur", () => { spacePressed = false; });
   window.addEventListener("resize", () => {
+    closeCardMenu();
     updateZoom();
     updateRailToggle();
   });
