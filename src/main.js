@@ -637,6 +637,10 @@ function applyCardSelection() {
   canvas.querySelectorAll(".board-card").forEach((card) => {
     card.classList.toggle("is-selected", selectedCardIds.has(card.dataset.id));
   });
+  const duplicate = $("#duplicate-selection");
+  const count = selectedCards().length;
+  duplicate.hidden = !count;
+  duplicate.textContent = `Dupliquer (${count})`;
 }
 
 function clearCardSelection() {
@@ -763,9 +767,14 @@ function cloneBoardSubtree(sourceId, copies, parentId) {
   copy.parentId = parentId;
   copy.title = `${copy.title || "Tableau"} (copie)`;
   copies.set(sourceId, copy);
+  const idMap = new Map(copy.items.map((item) => [item.id, newId()]));
   copy.items = copy.items.map((item) => {
     const clone = structuredClone(item);
-    clone.id = newId();
+    clone.id = idMap.get(item.id);
+    if (clone.type === "connector") {
+      clone.fromId = idMap.get(clone.fromId) ?? clone.fromId;
+      clone.toId = idMap.get(clone.toId) ?? clone.toId;
+    }
     if (clone.type === "board" && clone.boardId) {
       const nested = cloneBoardSubtree(clone.boardId, copies, copy.id);
       if (nested) clone.boardId = nested.id;
@@ -1848,6 +1857,7 @@ function renderBoard() {
     canvas.querySelectorAll(".board-card").forEach((card) => cardResizeObserver.observe(card));
   }
   renderVectorItems();
+  applyCardSelection();
   $("#empty-state").hidden = board.items.length > 0;
   const count = board.items.length;
   $("#item-count").textContent = `${count} élément${count > 1 ? "s" : ""}`;
@@ -3338,6 +3348,7 @@ function initEvents() {
     syncRemoteChanges();
   });
   $("#delete-vector-button").addEventListener("click", deleteSelectedVector);
+  $("#duplicate-selection").addEventListener("click", duplicateSelection);
   for (const [selector, property] of [["#connector-curve", "curve"], ["#connector-color", "color"]]) {
     $(selector).addEventListener("focus", snapshotState);
     $(selector).addEventListener("input", (event) => {

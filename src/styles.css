@@ -394,6 +394,7 @@ body.auth-locked .app-shell { display: none; }
 .empty-state h2 { margin: 12px 0 0; font-size: 19px; }
 .empty-state p { margin: 7px 0 15px; color: #d4e4d8; font-size: 11px; }
 .canvas-footer { display: flex; min-height: 34px; align-items: center; gap: 8px; border-top: 1px solid #3a5a51; padding: 0 11px; color: #d1dfd5; font: 8px var(--mono); }
+.canvas-footer .account-entry { min-height: 36px; white-space: nowrap; }
 .footer-divider { color: #789383; }
 .canvas-footer-right { margin-left: auto; color: #b4ca77; letter-spacing: .08em; }
 .footer-seal { padding-left: 5px; color: var(--acid); }
