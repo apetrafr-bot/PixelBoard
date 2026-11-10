@@ -7,7 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="description" content="Un espace visuel local pour organiser idées, images, tableaux et tâches d’équipe." />
     <title>PixelBoard — Atelier d’idées</title>
-    <script type="module" crossorigin src="/assets/index-xIosyAJ5.js"></script>
+    <script type="module" crossorigin src="/assets/index-Bf79SnMM.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-CVOgkzHe.css">
   </head>
   <body class="auth-locked">
@@ -252,6 +252,16 @@
       </aside>
     </div>
 
+    <dialog class="team-panel" id="emergency-export" aria-labelledby="export-heading" hidden>
+      <div class="team-panel-head"><h2 id="export-heading">Copie de secours</h2><button class="button button-quiet" id="export-close" type="button">Fermer</button></div>
+      <div class="auth-section">
+        <p id="export-status" role="status">Gardez cet onglet ouvert jusqu’à vérification de votre copie.</p>
+        <a class="button button-dark" id="export-download" download="pixelboard-espace.json" hidden>Télécharger le JSON</a>
+        <button class="button button-quiet" id="export-copy" type="button" disabled>Copier le JSON</button>
+        <label for="export-json">Copie mémoire à conserver dans un fichier .json</label>
+        <textarea id="export-json" rows="12" readonly spellcheck="false"></textarea>
+      </div>
+    </dialog>
     <dialog class="info-dialog" id="info-dialog">
       <div class="dialog-top"><span class="dialog-kicker">PIXELBOARD</span>      <button class="icon-button dialog-close" id="dialog-dismiss" type="button" aria-label="Fermer">×</button></div>
       <h2 id="dialog-title">Un tableau, à vous.</h2>

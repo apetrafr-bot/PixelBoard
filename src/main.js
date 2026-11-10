@@ -1,4 +1,6 @@
 import "./styles.css";
+import { createLocalStore } from "./local-store.js";
+import { memoryExport } from "./emergency-export.js";
 import { initItemsUI } from "./items-ui.js";
 import { isCatalogue, catalogueId, itemThumbnail } from "./items-model.js";
 import { AUDIO_ACCEPT, audioMime, prepareAudio, restoreAudio } from "./audio.js";
@@ -31,7 +33,10 @@ const dialogNote = $("#dialog-note");
 const toast = $("#toast");
 const teamPanel = $("#team-panel");
 
-let db;
+const localStore = createLocalStore(indexedDB, DB_NAME, STORE_NAME);
+let exportUrl = null;
+let exportBusy = false;
+let persistenceQueue = Promise.resolve();
 let board;
 let members = [];
 let boardRecords = new Map();
@@ -94,6 +99,7 @@ async function apiRequest(action, options = {}) {
   if (payload.csrf) csrfToken = payload.csrf;
   if (!response.ok) {
     if (response.status === 401 && remoteSession) {
+      resetEmergencyExport();
       canvas.querySelectorAll("audio").forEach((player) => player.pause());
       remoteSession = null;
       clearInterval(remoteSyncTimer);
@@ -148,19 +154,41 @@ async function saveRemoteBoard(record) {
 }
 
 async function persistRecords(records) {
+  const snapshot = structuredClone(records);
+  const account = remoteSession;
+  const result = persistenceQueue.then(() => {
+    if (remoteSession !== account) throw new Error("Compte modifié : sauvegarde interrompue, gardez votre copie mémoire.");
+    return persistRecordBatch(snapshot);
+  });
+  persistenceQueue = result.catch(() => {});
+  return result;
+}
+
+async function persistRecordBatch(records) {
   if (!remoteSession) {
     await writeRecords(records);
     return;
   }
   remoteWritesInFlight += 1;
+  const account = remoteSession;
   try {
     for (const record of records) {
       if (record.id === WORKSPACE_ID) continue;
+      if (remoteSession !== account) {
+        const error = new Error("Compte modifié pendant la sauvegarde.");
+        error.localBackupSaved = false;
+        throw error;
+      }
       const cachedRecord = remoteCacheRecord(record, true);
       try {
         await writeRecords([cachedRecord]);
       } catch (error) {
         error.localBackupSaved = false;
+        throw error;
+      }
+      if (remoteSession !== account) {
+        const error = new Error("Compte modifié après la copie locale; aucun envoi serveur lancé.");
+        error.localBackupSaved = true;
         throw error;
       }
       try {
@@ -342,45 +370,19 @@ function scheduleRemoteMemberSave(member) {
 }
 
 function openDatabase() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE_NAME)) {
-        request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Impossible d’ouvrir le stockage local."));
-  });
+  return localStore.open();
 }
 
 function readAllRecords() {
-  return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).getAll();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Impossible de lire l’espace de travail."));
-  });
+  return localStore.read();
 }
 
 function writeRecords(records) {
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, "readwrite");
-    const store = transaction.objectStore(STORE_NAME);
-    records.forEach((record) => store.put(structuredClone(record)));
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error("Impossible d’enregistrer l’espace de travail."));
-    transaction.onabort = () => reject(transaction.error ?? new Error("Enregistrement interrompu."));
-  });
+  return localStore.write(records);
 }
 
 function deleteRecord(id) {
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).delete(id);
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error("Impossible de supprimer la copie locale."));
-    transaction.onabort = () => reject(transaction.error ?? new Error("Suppression interrompue."));
-  });
+  return localStore.delete(id);
 }
 
 function defaultMembers() {
@@ -2473,43 +2475,55 @@ function confirmEmptyBoard() {
 }
 
 async function exportWorkspace() {
+  if (exportBusy) return;
+  exportBusy = true;
+  const panel = $("#emergency-export");
+  panel.hidden = false;
+  if (!panel.open) panel.showModal();
+  const status = $("#export-status");
+  status.textContent = "Préparation de la copie mémoire, médias inclus… Gardez cet onglet ouvert.";
+  const account = remoteSession;
   try {
-    let syncWarning = "";
-    try {
-      await saveImmediately();
-    } catch (error) {
-      if (!remoteSession) throw error;
-      syncWarning = ` Export local créé malgré une erreur de synchronisation : ${error.message}`;
-    }
-    const records = remoteSession
-      ? allStoredBoards()
-      : (await readAllRecords()).filter((record) => !record.id.startsWith(REMOTE_CACHE_PREFIX));
-    const exported = [];
-    for (const record of records) {
-      if (record.id === WORKSPACE_ID) {
-        exported.push({ id: record.id, members: record.members });
-        continue;
-      }
-      const copy = { ...record, items: [] };
-      for (const item of record.items || []) {
-        const exportedItem = { ...item };
-        if (item.image instanceof Blob) exportedItem.image = await imageDataUrl(item.image);
-        if (item.coverImage instanceof Blob) exportedItem.coverImage = await imageDataUrl(item.coverImage);
-        if (item.type === "audio") exportedItem.audio = await imageDataUrl(await restoreAudio(item.audio));
-        copy.items.push(exportedItem);
-      }
-      exported.push(copy);
-    }
-    const blob = new Blob([JSON.stringify({ format: "pixelboard", version: 1, exportedAt: new Date().toISOString(), records: exported }, null, 2)], { type: "application/json" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = "pixelboard-espace.json";
+    const text = await memoryExport(allStoredBoards(), members, WORKSPACE_ID, imageDataUrl);
+    if (remoteSession !== account) throw new Error("Le compte a changé pendant la préparation.");
+    const nextUrl = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    if (exportUrl) URL.revokeObjectURL(exportUrl);
+    exportUrl = nextUrl;
+    $("#export-json").value = text;
+    const link = $("#export-download");
+    link.href = exportUrl;
+    link.hidden = false;
+    $("#export-copy").disabled = false;
+    status.textContent = "Copie mémoire prête, sans accès au stockage ni au serveur. Cliquez Télécharger; si rien ne se passe, copiez le JSON dans un fichier .json. Vérifiez le fichier avant de fermer cet onglet.";
     link.click();
-    URL.revokeObjectURL(link.href);
-    showToast(syncWarning || "Copie JSON de l’espace téléchargée.");
   } catch (error) {
     console.error("Échec de l’export PixelBoard.", error);
-    showToast("Impossible de préparer l’export. Vérifiez l’espace disponible dans le navigateur.");
+    status.textContent = `Export impossible : ${error.message}. Gardez cet onglet ouvert; aucune récupération n’est confirmée.`;
+    showToast(status.textContent);
+  } finally {
+    exportBusy = false;
+  }
+}
+
+function resetEmergencyExport() {
+  if (exportUrl) URL.revokeObjectURL(exportUrl);
+  exportUrl = null;
+  $("#export-json").value = "";
+  $("#export-download").removeAttribute("href");
+  $("#export-download").hidden = true;
+  $("#export-copy").disabled = true;
+  $("#emergency-export").close();
+  $("#emergency-export").hidden = true;
+}
+
+async function copyEmergencyExport() {
+  const text = $("#export-json");
+  text.focus(); text.select();
+  try {
+    await navigator.clipboard.writeText(text.value);
+    $("#export-status").textContent = "JSON copié. Collez-le dans un fichier .json puis vérifiez-le avant de fermer cet onglet.";
+  } catch (error) {
+    $("#export-status").textContent = `Copie automatique refusée : ${error.message}. Le JSON est sélectionné : utilisez Ctrl+C (ou Copier sur mobile).`;
   }
 }
 
@@ -2583,6 +2597,7 @@ async function signOutAccount() {
     }
     await apiRequest("logout", { method: "POST", body: {} });
     clearInterval(remoteSyncTimer);
+    resetEmergencyExport();
     remoteSession = null;
     remoteVersions = new Map();
     history = [];
@@ -3307,6 +3322,8 @@ function initEvents() {
   $("#help-link").addEventListener("click", (event) => { event.preventDefault(); showCurrentStorageNotice(); });
   $("#share-button").addEventListener("click", showCurrentStorageNotice);
   $("#export-button").addEventListener("click", exportWorkspace);
+  $("#export-close").addEventListener("click", () => { $("#emergency-export").close(); $("#emergency-export").hidden = true; });
+  $("#export-copy").addEventListener("click", copyEmergencyExport);
   $("#undo-button").addEventListener("click", handleUndo);
   $("#redo-button").addEventListener("click", handleRedo);
   $("#zoom-in").addEventListener("click", () => adjustZoom(.1));
@@ -3666,7 +3683,7 @@ function initEvents() {
 
 async function start() {
   try {
-    db = await openDatabase();
+    await openDatabase();
     const records = await readAllRecords();
     localWorkspaceRecords(records).forEach((record) => boardRecords.set(record.id, normalizeBoard(record)));
     const meta = records.find((record) => record.id === WORKSPACE_ID);

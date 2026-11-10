@@ -90,6 +90,12 @@ Dans l'interface, **Membres** est réservé au propriétaire connecté (administ
 
 ## Vérifications
 
+### Stockage fermé et copie de secours
+
+Si le navigateur signale « database connection is closing », **gardez l’onglet ouvert, sans recharger, vous déconnecter ni effacer IndexedDB** avant d’avoir vérifié une copie de vos modifications. La connexion locale est désormais invalidée sur fermeture/changement de version, puis rouverte; seules les opérations locales idempotentes sont réessayées une fois après connexion périmée ou transaction annulée. Les accès locaux sont sérialisés. Un quota plein ou une erreur persistante reste signalé, sans suppression/reset de base. L’envoi serveur reste conditionné à l’écriture préalable du cache local; un échec local ne vaut pas confirmation serveur.
+
+**Exporter** prépare immédiatement une photographie de l’état mémoire actuel (tableaux chargés, tableau actif prioritaire, profils et médias image/couverture/audio inclus), sans attendre IndexedDB ni une requête serveur et sans modifier la copie serveur. Le panneau **Copie de secours** conserve un lien **Télécharger le JSON** et le texte **Copier le JSON**; si le navigateur refuse le presse-papiers, sélectionnez le texte et utilisez Copier/Ctrl+C vers un fichier `.json`. Vérifiez le fichier avant de fermer l’onglet. La préparation ou le clic de téléchargement ne prouve pas qu’un fichier a été enregistré. Une page déjà ouverte avec une ancienne version ne reçoit pas ce correctif automatiquement : ne la rechargez pas pour l’obtenir tant que sa mémoire n’a pas été sauvegardée séparément.
+
 ### Accès au site
 
 Le site affiche d'abord une page de connexion, sans canvas ni outils accessibles hors session. Après authentification, l'espace partagé s'ouvre; une déconnexion ou une réponse API 401 réaffiche la connexion. Si l'API est absente ou indisponible, le diagnostic et un bouton de nouvelle tentative restent affichés, sans bascule vers un éditeur local. Les anciennes données IndexedDB sont conservées et leur import reste explicite après connexion. L'inscription membre exige toujours une invitation; le formulaire propriétaire reste limité au setup initial protégé. Le masquage de l'éditeur ne remplace pas les autorisations de l'API.

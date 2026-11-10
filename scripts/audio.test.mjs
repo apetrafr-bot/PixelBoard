@@ -47,7 +47,7 @@ test("audio serialization, remote reload and cache/export roundtrip retain bytes
   assert.deepEqual(new Uint8Array(await reloaded.items[0].audio.arrayBuffer()), wav);
   assert.equal(reloaded.items[0].title, "Ambiance");
   assert.deepEqual(new Uint8Array(await structuredClone(reloaded).items[0].audio.arrayBuffer()), wav);
-  assert.match(source, /exportedItem\.audio = await imageDataUrl\(await restoreAudio\(item\.audio\)\)/);
+  assert.match(source, /memoryExport\(allStoredBoards\(\), members, WORKSPACE_ID, imageDataUrl\)/);
 });
 
 test("audio picker/drop batch validates before mutation, preserves mixed image uploads and rejects stale account/board", async () => {
