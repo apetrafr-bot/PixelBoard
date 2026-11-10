@@ -1,6 +1,7 @@
 import "./styles.css";
 import { initItemsUI } from "./items-ui.js";
 import { isCatalogue, catalogueId, itemThumbnail } from "./items-model.js";
+import { AUDIO_ACCEPT, audioMime, prepareAudio, restoreAudio } from "./audio.js";
 
 const DB_NAME = "pixelboard-local";
 const STORE_NAME = "boards";
@@ -21,6 +22,7 @@ const boardStage = $("#board-stage");
 const viewport = $("#canvas-viewport");
 const connectorLayer = $("#connector-layer");
 const imageInput = $("#image-input");
+const audioInput = $("#audio-input");
 const saveStatus = $("#save-status");
 const infoDialog = $("#info-dialog");
 const dialogTitle = $("#dialog-title");
@@ -88,6 +90,7 @@ async function apiRequest(action, options = {}) {
   if (payload.csrf) csrfToken = payload.csrf;
   if (!response.ok) {
     if (response.status === 401 && remoteSession) {
+      canvas.querySelectorAll("audio").forEach((player) => player.pause());
       remoteSession = null;
       clearInterval(remoteSyncTimer);
       apiMessage = "Votre session a expiré. Reconnectez-vous pour continuer.";
@@ -105,6 +108,7 @@ async function serializeBoard(record) {
   for (const item of data.items || []) {
     if (item.image instanceof Blob) item.image = await imageDataUrl(item.image);
     if (item.coverImage instanceof Blob) item.coverImage = await imageDataUrl(item.coverImage);
+    if (item.type === "audio") item.audio = await imageDataUrl(await restoreAudio(item.audio));
   }
   return data;
 }
@@ -114,6 +118,7 @@ async function deserializeBoard(record) {
   for (const item of data.items || []) {
     if (typeof item.image === "string" && item.image.startsWith("data:image/")) item.image = await (await fetch(item.image)).blob();
     if (typeof item.coverImage === "string" && item.coverImage.startsWith("data:image/")) item.coverImage = await (await fetch(item.coverImage)).blob();
+    if (item.type === "audio") item.audio = await restoreAudio(item.audio);
   }
   return normalizeBoard(data);
 }
@@ -491,7 +496,7 @@ function imageDataUrl(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error ?? new Error("Impossible de préparer une image pour l’export."));
+    reader.onerror = () => reject(reader.error ?? new Error("Impossible de préparer le média pour l’export."));
     reader.readAsDataURL(blob);
   });
 }
@@ -540,7 +545,7 @@ function buildCard(item) {
   grip.setAttribute("aria-label", `Déplacer ${cardDescription(item)}`);
   grip.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown ArrowLeft ArrowRight");
 
-  const labels = { note: "Note", image: "Image", link: "Lien", board: "Tableau", "item-ref": "Item Unity", todo: Array.isArray(item.entries) ? "Liste" : "Tâche" };
+  const labels = { note: "Note", image: "Image", audio: "Son / musique", link: "Lien", board: "Tableau", "item-ref": "Item Unity", todo: Array.isArray(item.entries) ? "Liste" : "Tâche" };
   const label = document.createElement("span");
   label.className = "grip-label";
   label.innerHTML = `<span class="grip-symbol" aria-hidden="true">⠿</span><span>${labels[item.type] ?? "Carte"}</span>`;
@@ -574,6 +579,7 @@ function buildCard(item) {
   card.append(grip);
 
   if (item.type === "image") renderImageCard(card, item);
+  else if (item.type === "audio") renderAudioCard(card, item);
   else if (item.type === "note") renderNoteCard(card, item);
   else if (item.type === "link") renderLinkCard(card, item);
   else if (item.type === "board") renderNestedBoard(card, item);
@@ -632,8 +638,43 @@ function buildCard(item) {
 }
 
 function cardDescription(item) {
-  const descriptions = { image: "l’image", note: "la note", link: "le lien", board: "le tableau", todo: "la tâche" };
+  const descriptions = { image: "l’image", audio: "le son", note: "la note", link: "le lien", board: "le tableau", todo: "la tâche" };
   return `${descriptions[item.type] ?? "la carte"} ${item.title || "sans titre"}`;
+}
+
+function renderAudioCard(card, item) {
+  const content = document.createElement("div");
+  content.className = "audio-content";
+  const title = createGripContent(item, "du son", content, "title");
+  const player = document.createElement("audio");
+  player.controls = true;
+  player.preload = "metadata";
+  player.setAttribute("aria-label", `Écouter ${item.title || item.fileName || "le son"}`);
+  const status = document.createElement("p");
+  status.className = "audio-status";
+  status.setAttribute("role", "status");
+  status.textContent = item.fileName || "Son enregistré";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "Réessayer la lecture";
+  retry.hidden = true;
+  retry.addEventListener("click", () => { retry.hidden = true; status.textContent = "Chargement du son…"; player.load(); });
+  player.addEventListener("error", () => {
+    status.textContent = "Lecture impossible : fichier endommagé ou codec non pris en charge par ce navigateur. Réessayez ou ajoutez un MP3/WAV compatible.";
+    retry.hidden = false;
+  });
+  player.addEventListener("loadedmetadata", () => { status.textContent = item.fileName || "Son enregistré"; retry.hidden = true; });
+  title.addEventListener("input", () => player.setAttribute("aria-label", `Écouter ${item.title || "le son"}`));
+  for (const control of [player, retry]) {
+    control.addEventListener("pointerdown", (event) => event.stopPropagation());
+    control.addEventListener("keydown", (event) => event.stopPropagation());
+  }
+  if (item.audio instanceof Blob) player.src = URL.createObjectURL(item.audio);
+  else {
+    status.textContent = "Son indisponible dans cette copie. Rechargez la copie sauvegardée ou ajoutez de nouveau le fichier.";
+  }
+  content.append(player, status, retry);
+  card.append(content);
 }
 
 function safeColor(value) {
@@ -1342,6 +1383,7 @@ function anchorAtPointer(card, event) {
 
 function renderBoard() {
   if (!board.items.some((item) => item.id === selectedVectorId)) selectedVectorId = null;
+  canvas.querySelectorAll("audio").forEach((player) => { player.pause(); URL.revokeObjectURL(player.src); player.removeAttribute("src"); player.load(); });
   canvas.querySelectorAll("img").forEach((image) => URL.revokeObjectURL(image.src));
   cardResizeObserver?.disconnect();
   canvas.replaceChildren(...board.items.filter((item) => !["connector", "drawing"].includes(item.type)).map(buildCard));
@@ -1623,25 +1665,36 @@ function adjustZoom(delta, anchorX = viewport.clientWidth / 2, anchorY = viewpor
 }
 
 async function addImageFiles(files, clientX, clientY) {
-  const images = Array.from(files);
-  if (!images.length) return;
-  const invalid = images.find((file) => !MIME_TYPES.has(file.type) || file.size > 15 * 1024 * 1024);
-  if (invalid) {
-    showToast(invalid.size > 15 * 1024 * 1024 ? "Chaque image doit faire moins de 15 Mo." : "Choisissez une image PNG, JPG, WEBP ou GIF.");
-    return;
+  if (Array.from(files).some((file) => !MIME_TYPES.has(file.type))) throw new Error("Choisissez une image PNG, JPG, WEBP ou GIF.");
+  await addMediaFiles(files, clientX, clientY);
+}
+
+async function addMediaFiles(files, clientX, clientY) {
+  const entries = Array.from(files);
+  if (!entries.length) return;
+  const targetBoard = board;
+  const sessionId = remoteSession?.id;
+  const prepared = [];
+  for (const file of entries) {
+    if (["audio/mpeg", "audio/wav", "audio/ogg"].includes(audioMime(file))) {
+      prepared.push({ type: "audio", file, audio: await prepareAudio(file) });
+    } else if (MIME_TYPES.has(file.type) && file.size > 0 && file.size <= 15 * 1024 * 1024) {
+      prepared.push({ type: "image", file });
+    } else {
+      throw new Error("Choisissez une image PNG/JPG/WEBP/GIF ou un son MP3/WAV/OGG de 15 Mio maximum par fichier.");
+    }
   }
+  if (board !== targetBoard || remoteSession?.id !== sessionId) throw new Error("Le tableau ou le compte a changé. Ajoutez vos fichiers de nouveau.");
   const point = Number.isFinite(clientX) ? worldPoint({ clientX, clientY }) : viewportCenter();
   snapshotState();
-  images.forEach((file, index) => {
-    board.items.push({
-      id: newId(), type: "image",
-      x: Math.max(0, point.x + index * 36), y: Math.max(0, point.y + index * 36),
-      z: ++lastZIndex, title: file.name.replace(/\.[^.]+$/, ""), fileName: file.name, image: file, imageZoom: 1,
-    });
-  });
+  prepared.forEach(({ type, file, audio }, index) => board.items.push({
+    id: newId(), type, x: Math.max(0, point.x + index * 36), y: Math.max(0, point.y + index * 36),
+    z: ++lastZIndex, title: file.name.replace(/\.[^.]+$/, ""), fileName: file.name,
+    ...(type === "audio" ? { audio } : { image: file, imageZoom: 1 }),
+  }));
   renderBoard();
   scheduleSave();
-  showToast(`${images.length} image${images.length > 1 ? "s ajoutées" : " ajoutée"} au tableau.`);
+  showToast(`${prepared.length} média${prepared.length > 1 ? "s ajoutés" : " ajouté"} au tableau.${prepared.some((entry) => entry.type === "audio") ? " Lancez la lecture des sons avec ▶." : ""}`);
 }
 
 function startCardDrag(event, grip) {
@@ -1702,7 +1755,7 @@ function beginVector(event) {
   if (event.button !== 0 || activeTool === "select") return;
   if (activeTool === "line") {
     const source = event.target.closest(".board-card");
-    if (!source || event.target.closest("input, textarea, select, a")) return;
+    if (!source || event.target.closest("input, textarea, select, a, audio, .audio-content button")) return;
     const item = board.items.find((candidate) => candidate.id === source.dataset.id);
     if (!item) return;
     connectionGesture = {
@@ -1867,7 +1920,7 @@ function confirmEmptyBoard() {
     scheduleSave();
     showToast("Le tableau est vide.");
   };
-  showDialog("Vider ce tableau ?", "Cette action retire toutes les notes, images, tâches, dessins et connecteurs de ce tableau.", "Les autres tableaux et les profils de l’équipe seront conservés.", "Tout supprimer");
+  showDialog("Vider ce tableau ?", "Cette action retire toutes les notes, images, sons, tâches, dessins et connecteurs de ce tableau.", "Les autres tableaux et les profils de l’équipe seront conservés.", "Tout supprimer");
 }
 
 async function exportWorkspace() {
@@ -1893,6 +1946,7 @@ async function exportWorkspace() {
         const exportedItem = { ...item };
         if (item.image instanceof Blob) exportedItem.image = await imageDataUrl(item.image);
         if (item.coverImage instanceof Blob) exportedItem.coverImage = await imageDataUrl(item.coverImage);
+        if (item.type === "audio") exportedItem.audio = await imageDataUrl(await restoreAudio(item.audio));
         copy.items.push(exportedItem);
       }
       exported.push(copy);
@@ -2696,6 +2750,8 @@ function initEvents() {
   $("#tool-checklist").addEventListener("click", () => addTask(viewportCenter(), { entries: [{ text: "", done: false }] }));
   $("#tool-board").addEventListener("click", () => addNestedBoard());
   $("#tool-image").addEventListener("click", () => imageInput.click());
+  audioInput.accept = AUDIO_ACCEPT;
+  $("#tool-audio").addEventListener("click", () => audioInput.click());
   $("#tool-trash").addEventListener("click", confirmEmptyBoard);
   $("#import-button").addEventListener("click", showImportNotice);
   $("#help-button").addEventListener("click", showCurrentStorageNotice);
@@ -2883,13 +2939,18 @@ function initEvents() {
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault();
     $("#drop-overlay").classList.remove("is-visible");
-    try { await addImageFiles(event.dataTransfer.files, event.clientX, event.clientY); }
-    catch (error) { reportSaveError(error); }
+    try { await addMediaFiles(event.dataTransfer.files, event.clientX, event.clientY); }
+    catch (error) { showToast(`Ajout impossible : ${error.message}`); }
   });
   imageInput.addEventListener("change", async () => {
     try { await addImageFiles(imageInput.files); }
-    catch (error) { reportSaveError(error); }
+    catch (error) { showToast(`Ajout impossible : ${error.message}`); }
     finally { imageInput.value = ""; }
+  });
+  audioInput.addEventListener("change", async () => {
+    try { await addMediaFiles(audioInput.files); }
+    catch (error) { showToast(`Ajout impossible : ${error.message}`); }
+    finally { audioInput.value = ""; }
   });
   viewport.addEventListener("wheel", (event) => {
     if (!event.ctrlKey && !event.metaKey) return;

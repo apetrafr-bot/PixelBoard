@@ -63,6 +63,9 @@
           <button class="rail-link" id="tool-image" type="button" title="Ajouter des images ou les déposer">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM5 13l3-3 2 2 2-3 3 4M7 7h.01"/></svg><span>Images</span>
           </button>
+          <button class="rail-link" id="tool-audio" type="button" title="Ajouter des sons ou musiques MP3, WAV ou OGG (15 Mio maximum par fichier)">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 14V4l8-2v10M8 6l8-2"/><ellipse cx="5" cy="15" rx="3" ry="2"/><ellipse cx="13" cy="13" rx="3" ry="2"/></svg><span>Sons</span>
+          </button>
           <button class="rail-link" data-tool="draw" type="button" title="Dessiner sur le tableau">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 14 8.5-8.5 3 3L7 17H4zM11 7l3 3M4 17h12"/></svg><span>Dessiner</span>
           </button>
@@ -85,6 +88,7 @@
 
       <main class="workspace">
         <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+        <input id="audio-input" type="file" accept=".mp3,.wav,.ogg,audio/mpeg,audio/wav,audio/ogg" multiple hidden />
 
         <section class="board-area" aria-label="Surface du tableau">
           <div class="canvas-toolbar">
@@ -129,7 +133,7 @@
               <svg class="connector-layer" id="connector-layer" aria-label="Connecteurs et dessins"></svg>
               <div class="board-canvas" id="board-canvas" aria-label="Cartes du tableau"></div>
             </div>
-            <div class="drop-overlay" id="drop-overlay"><span>Déposez vos images sur le tableau</span></div>
+            <div class="drop-overlay" id="drop-overlay"><span>Déposez vos images ou sons sur le tableau</span></div>
             <div class="empty-state" id="empty-state" hidden>
               <span class="empty-mark">▦</span>
               <h2>Un peu d’espace pour vos idées.</h2>

@@ -2,6 +2,26 @@
 declare(strict_types=1);
 require_once __DIR__ . '/unity-lib.php';
 
+function pixelboard_valid_audio_media(array $board): bool
+{
+    foreach ($board['items'] ?? [] as $item) {
+        if (($item['type'] ?? '') !== 'audio') continue;
+        $value = $item['audio'] ?? null;
+        if (!is_string($value) || strlen($value) > 20971550
+            || !preg_match('/^data:audio\/(mpeg|wav|ogg);base64,([A-Za-z0-9+\/]+={0,2})$/D', $value, $match)) return false;
+        $bytes = base64_decode($match[2], true);
+        if ($bytes === false || strlen($bytes) === 0 || strlen($bytes) > 15 * 1024 * 1024 || base64_encode($bytes) !== $match[2]) return false;
+        $valid = match ($match[1]) {
+            'wav' => strlen($bytes) >= 12 && substr($bytes, 0, 4) === 'RIFF' && substr($bytes, 8, 4) === 'WAVE',
+            'ogg' => str_starts_with($bytes, 'OggS'),
+            'mpeg' => str_starts_with($bytes, 'ID3') || (strlen($bytes) >= 3 && ord($bytes[0]) === 255
+                && (ord($bytes[1]) & 224) === 224 && (ord($bytes[1]) & 6) !== 0 && (ord($bytes[1]) & 24) !== 8),
+        };
+        if (!$valid) return false;
+    }
+    return true;
+}
+
 function pixelboard_install_backups(PDO $db): void
 {
     $db->exec("CREATE TABLE IF NOT EXISTS workspace_backups (
@@ -32,7 +52,7 @@ function pixelboard_valid_backup_records(mixed $records): bool
             || $record['board_id'] === '' || strlen($record['board_id']) > 80
             || isset($ids[$record['board_id']]) || !is_string($record['data'] ?? null)) return false;
         $data = json_decode($record['data'], true);
-        if (!is_array($data) || ($data['id'] ?? null) !== $record['board_id'] || !is_array($data['items'] ?? null) || !pb_catalogue_valid($data)) return false;
+        if (!is_array($data) || ($data['id'] ?? null) !== $record['board_id'] || !is_array($data['items'] ?? null) || !pb_catalogue_valid($data) || !pixelboard_valid_audio_media($data)) return false;
         $ids[$record['board_id']] = true;
     }
     return true;

@@ -12,6 +12,26 @@ function check(bool $condition, string $message): void
 }
 
 $owner = ['id' => 1, 'workspace_id' => 7, 'role' => 'owner'];
+$audioBoard = ['id'=>'root','items'=>[['id'=>'audio','type'=>'audio','audio'=>'data:audio/wav;base64,'.base64_encode("RIFF\x28\0\0\0WAVEfmt ")]]];
+check(pixelboard_valid_audio_media($audioBoard), 'audio WAV borne accepte');
+check(pixelboard_valid_backup_records([['board_id'=>'root','data'=>json_encode($audioBoard)]]), 'audio conserve dans copie restauree');
+foreach (['mpeg'=>'ID3test','ogg'=>'OggStest'] as $mime=>$bytes) {
+    $valid = $audioBoard; $valid['items'][0]['audio']='data:audio/'.$mime.';base64,'.base64_encode($bytes);
+    check(pixelboard_valid_audio_media($valid), 'format audio autorise accepte');
+}
+foreach (['https://example.test/a.wav','data:text/html;base64,AAAA','data:audio/wav;base64,AAAA',
+    'data:audio/wav;base64,%%%','data:audio/mpeg;base64,'.base64_encode("\xff\xf9\0")] as $invalid) {
+    $bad=$audioBoard; $bad['items'][0]['audio']=$invalid;
+    check(!pixelboard_valid_audio_media($bad), 'audio invalide externe surdimensionne refuse');
+    check(!pixelboard_valid_backup_records([['board_id'=>'root','data'=>json_encode($bad)]]), 'copie audio corrompue refusee');
+}
+$oversizedAudio=$audioBoard; $oversizedAudio['items'][0]['audio']=str_repeat('a',20971551);
+check(!pixelboard_valid_audio_media($oversizedAudio), 'audio surdimensionne refuse avant decodage');
+unset($oversizedAudio);
+$boundaryAudio=$audioBoard;
+$boundaryAudio['items'][0]['audio']='data:audio/mpeg;base64,'.base64_encode('ID3'.str_repeat('a',15*1024*1024-3));
+check(pixelboard_valid_audio_media($boundaryAudio), 'borne exacte 15 Mio acceptee');
+unset($boundaryAudio);
 check(pixelboard_backup_versions_match(['b' => 2, 'a' => 1], ['a' => 1, 'b' => 2]), 'versions identiques sans dependance a l’ordre');
 check(!pixelboard_backup_versions_match(['a' => 2], ['a' => 1]), 'copie obsolete refusee');
 check(!pixelboard_backup_versions_match(['a' => 1, 'b' => 1], ['a' => 1]), 'nouveau tableau concurrent detecte');

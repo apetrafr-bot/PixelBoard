@@ -485,6 +485,7 @@ try {
             pixelboard_fail(422, 'Les données du tableau sont invalides.');
         }
         if (!pb_catalogue_valid($data)) pixelboard_fail(422, 'Catalogue ou référence item invalide.');
+        if (!pixelboard_valid_audio_media($data)) pixelboard_fail(422, 'Son invalide : MP3, WAV ou OGG de 15 Mio maximum attendu.');
         $projects = [];
         if (($data['recordType'] ?? '') === 'item-catalogue') $projects[] = $data['projectId'];
         foreach ($data['items'] as $item) {
