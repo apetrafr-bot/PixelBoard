@@ -1,6 +1,8 @@
 import "./styles.css";
 import { createLocalStore } from "./local-store.js";
 import { memoryExport } from "./emergency-export.js";
+import { apiResponse } from "./api-response.js";
+import { pendingBoardAction, withLocalView } from "./sync-model.js";
 import { initItemsUI } from "./items-ui.js";
 import { isCatalogue, catalogueId, itemThumbnail } from "./items-model.js";
 import { AUDIO_ACCEPT, audioMime, prepareAudio, restoreAudio } from "./audio.js";
@@ -33,7 +35,7 @@ const dialogNote = $("#dialog-note");
 const toast = $("#toast");
 const teamPanel = $("#team-panel");
 
-const localStore = createLocalStore(indexedDB, DB_NAME, STORE_NAME);
+const localStore = createLocalStore(globalThis.indexedDB, DB_NAME, STORE_NAME);
 let exportUrl = null;
 let exportBusy = false;
 let persistenceQueue = Promise.resolve();
@@ -46,7 +48,9 @@ let selectedCardIds = new Set();
 let cardClipboard = null;
 let pasteCount = 0;
 let marqueeGesture = null;
+const activeBoardPointers = new Set();
 let saveTimer;
+let viewSaveTimer;
 let toastTimer;
 let lastZIndex = 5;
 let history = [];
@@ -68,6 +72,14 @@ let remoteSession = null;
 let csrfToken = "";
 let remoteVersions = new Map();
 let pendingRemoteBoardIds = new Set();
+let conflictedRemoteBoardIds = new Set();
+let remoteBaseVersions = new Map();
+let localRevisions = new Map();
+let scheduledRecords = new Map();
+let syncEpoch = 0;
+let suspendedSession = null;
+let authRefresh = null;
+let lastAuthCheck = 0;
 let remoteSyncTimer;
 let remoteWritesInFlight = 0;
 let remoteSyncInFlight = false;
@@ -81,36 +93,64 @@ let itemsUI;
 const newId = () => crypto.randomUUID();
 
 async function apiRequest(action, options = {}) {
+  const account = remoteSession;
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (csrfToken && options.method && options.method !== "GET") headers["X-CSRF-Token"] = csrfToken;
-  const response = await fetch(`${API_URL}?action=${encodeURIComponent(action)}${options.query || ""}`, {
+  const { response, payload } = await apiResponse(`${API_URL}?action=${encodeURIComponent(action)}${options.query || ""}`, {
     method: options.method || "GET",
     credentials: "same-origin",
+    cache: "no-store",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
-  if (!response.headers.get("content-type")?.includes("application/json")) {
-    const error = new Error("L’API équipe PHP n’est pas installée à cette adresse.");
-    error.apiMissing = true;
-    throw error;
-  }
-  const payload = await response.json();
+  if (remoteSession !== account) throw new Error("Compte modifié pendant la requête. La réponse précédente n’a pas été appliquée.");
   if (payload.csrf) csrfToken = payload.csrf;
   if (!response.ok) {
+    if (response.status === 403 && payload.code === "csrf_expired" && !options.csrfRetried) {
+      await refreshRemoteSession(account);
+      return apiRequest(action, { ...options, csrfRetried: true });
+    }
     if (response.status === 401 && remoteSession) {
-      resetEmergencyExport();
-      canvas.querySelectorAll("audio").forEach((player) => player.pause());
-      remoteSession = null;
-      clearInterval(remoteSyncTimer);
-      apiMessage = "Votre session a expiré. Reconnectez-vous pour continuer.";
-      renderAuthControls();
+      suspendRemoteSession("Votre session a expiré. Exportez votre copie avant de vous reconnecter.");
     }
     const error = new Error(payload.error || `Erreur serveur (${response.status}).`);
     error.status = response.status;
     throw error;
   }
   return payload;
+}
+
+function suspendRemoteSession(message) {
+  const owner = remoteSession;
+  if (!owner) return;
+  suspendedSession = owner;
+  const drafts = allStoredBoards().filter((record) => localRevisions.has(record.id));
+  if (drafts.length) writeRecords(drafts.map((record) => remoteCacheRecord(record, true, owner)))
+    .catch((error) => { console.error("Copie de secours de la session interrompue impossible.", error); setSaveStatus("Copie mémoire à exporter", "has-error"); });
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  canvas.querySelectorAll("audio").forEach((player) => player.pause());
+  remoteSession = null;
+  clearInterval(remoteSyncTimer);
+  apiMessage = message;
+  renderAuthControls();
+}
+
+async function refreshRemoteSession(account = remoteSession) {
+  if (authRefresh) return authRefresh;
+  authRefresh = (async () => {
+    const auth = await apiRequest("auth");
+    if (remoteSession !== account) throw new Error("Compte modifié pendant la vérification de session.");
+    if (account && (!auth.user || String(auth.user.id) !== account.id
+        || (account.workspaceId && String(auth.user.workspace_id) !== account.workspaceId))) {
+      suspendRemoteSession("La session a changé. Votre copie reste en mémoire : exportez-la, puis reconnectez-vous.");
+      throw new Error(apiMessage);
+    }
+    lastAuthCheck = Date.now();
+    return auth;
+  })().finally(() => { authRefresh = null; });
+  return authRefresh;
 }
 
 async function serializeBoard(record) {
@@ -145,26 +185,40 @@ function remoteMemberRecord(member) {
 }
 
 async function saveRemoteBoard(record) {
+  const account = remoteSession;
+  if (Date.now() - lastAuthCheck > 60000) await refreshRemoteSession(account);
+  if (!account || remoteSession !== account) throw new Error("Reconnectez-vous avant d’envoyer cette copie.");
   const data = await serializeBoard(record);
+  if (remoteSession !== account) throw new Error("Compte modifié pendant la préparation de la copie.");
   const response = await apiRequest("board", {
     method: "PUT",
     body: { id: record.id, version: remoteVersions.get(record.id) || 0, data },
   });
+  if (remoteSession !== account) throw new Error("Compte modifié après l’envoi; sa réponse n’a pas été appliquée au nouvel espace.");
   remoteVersions.set(record.id, response.version);
 }
 
 async function persistRecords(records) {
+  if (!remoteSession && suspendedSession) throw new Error("Session interrompue : exportez votre copie avant de vous reconnecter.");
   const snapshot = structuredClone(records);
   const account = remoteSession;
+  syncEpoch++;
+  for (const record of snapshot) {
+    if (record.id === WORKSPACE_ID || !account) continue;
+    if (!localRevisions.has(record.id)) remoteBaseVersions.set(record.id, remoteVersions.get(record.id) || 0);
+    localRevisions.set(record.id, (localRevisions.get(record.id) || 0) + 1);
+    boardRecords.set(record.id, structuredClone(record));
+  }
+  const revisions = new Map(snapshot.map((record) => [record.id, localRevisions.get(record.id)]));
   const result = persistenceQueue.then(() => {
     if (remoteSession !== account) throw new Error("Compte modifié : sauvegarde interrompue, gardez votre copie mémoire.");
-    return persistRecordBatch(snapshot);
+    return persistRecordBatch(snapshot, revisions);
   });
   persistenceQueue = result.catch(() => {});
   return result;
 }
 
-async function persistRecordBatch(records) {
+async function persistRecordBatch(records, revisions) {
   if (!remoteSession) {
     await writeRecords(records);
     return;
@@ -172,52 +226,66 @@ async function persistRecordBatch(records) {
   remoteWritesInFlight += 1;
   const account = remoteSession;
   try {
+    const drafts = records.filter((record) => record.id !== WORKSPACE_ID);
+    try {
+      await writeRecords(drafts.map((record) => remoteCacheRecord(record, true, account)));
+    } catch (error) {
+      error.localBackupSaved = false;
+      throw error;
+    }
     for (const record of records) {
       if (record.id === WORKSPACE_ID) continue;
-      if (remoteSession !== account) {
-        const error = new Error("Compte modifié pendant la sauvegarde.");
-        error.localBackupSaved = false;
-        throw error;
-      }
-      const cachedRecord = remoteCacheRecord(record, true);
-      try {
-        await writeRecords([cachedRecord]);
-      } catch (error) {
-        error.localBackupSaved = false;
-        throw error;
-      }
       if (remoteSession !== account) {
         const error = new Error("Compte modifié après la copie locale; aucun envoi serveur lancé.");
         error.localBackupSaved = true;
         throw error;
       }
       try {
-        if (pendingRemoteBoardIds.has(record.id)) {
+        if (conflictedRemoteBoardIds.has(record.id)) {
           const error = new Error("Conflit en attente : ouvrez Mon compte → Recharger la copie serveur. Exportez d’abord votre copie pour conserver vos modifications.");
           error.localBackupSaved = true;
           throw error;
         }
         await saveRemoteBoard(record);
         pendingRemoteBoardIds.delete(record.id);
-        await writeRecords([remoteCacheRecord(record, false)]);
+        conflictedRemoteBoardIds.delete(record.id);
+        remoteBaseVersions.set(record.id, remoteVersions.get(record.id));
+        if (localRevisions.get(record.id) === revisions.get(record.id)) {
+          await writeRecords([remoteCacheRecord(record, false, account)]);
+          if (remoteSession !== account) throw new Error("Compte modifié après la copie locale.");
+          if (localRevisions.get(record.id) === revisions.get(record.id)) localRevisions.delete(record.id);
+        } else {
+          const latest = record.id === board.id ? board : boardRecords.get(record.id);
+          if (latest) await writeRecords([remoteCacheRecord(latest, true, account)]);
+        }
       } catch (error) {
-        pendingRemoteBoardIds.add(record.id);
+        if (remoteSession === account || (!remoteSession && suspendedSession === account)) {
+          pendingRemoteBoardIds.add(record.id);
+          if (error.status === 409) conflictedRemoteBoardIds.add(record.id);
+        }
         error.localBackupSaved = true;
         renderAuthControls();
         throw error;
       }
     }
+  } catch (error) {
+    if (remoteSession === account || (!remoteSession && suspendedSession === account)) {
+      records.filter((record) => record.id !== WORKSPACE_ID && localRevisions.has(record.id))
+        .forEach((record) => pendingRemoteBoardIds.add(record.id));
+    }
+    throw error;
   } finally {
     remoteWritesInFlight -= 1;
   }
 }
 
-function remoteCacheRecord(record, pendingRemoteSync) {
+function remoteCacheRecord(record, pendingRemoteSync, account = remoteSession) {
   const cached = {
     ...structuredClone(record),
-    id: `${REMOTE_CACHE_PREFIX}${remoteSession.id}:${record.id}`,
+    id: `${REMOTE_CACHE_PREFIX}${account.id}:${record.id}`,
     remoteBoardId: record.id,
     pendingRemoteSync,
+    baseVersion: remoteBaseVersions.has(record.id) ? remoteBaseVersions.get(record.id) : remoteVersions.get(record.id) ?? 0,
   };
   return cached;
 }
@@ -227,8 +295,19 @@ function localWorkspaceRecords(records) {
 }
 
 async function loadRemoteWorkspace(auth, localRecords) {
-  remoteSession = {
+  const owner = remoteSession || suspendedSession;
+  if (owner && localRevisions.size) {
+    const retained = new Map(localRecords.map((record) => [record.id, record]));
+    const drafts = allStoredBoards().filter((record) => localRevisions.has(record.id))
+      .map((record) => remoteCacheRecord(record, true, owner));
+    await writeRecords(drafts);
+    drafts.forEach((record) => retained.set(record.id, record));
+    localRecords = [...retained.values()];
+  }
+  const previous = remoteSession;
+  const account = {
     id: String(auth.user.id),
+    workspaceId: String(auth.user.workspace_id),
     name: auth.user.display_name,
     email: auth.user.email,
     role: auth.user.role,
@@ -239,21 +318,35 @@ async function loadRemoteWorkspace(auth, localRecords) {
     apiRequest("members"),
     apiRequest("boards"),
   ]);
+  if (remoteSession !== previous) throw new Error("Compte modifié pendant le chargement.");
+  const remoteBoards = [];
+  for (const entry of boardResponse.boards) {
+    const record = await deserializeBoard(entry.data);
+    const cachedView = localRecords.find((cached) => cached.id === `${REMOTE_CACHE_PREFIX}${account.id}:${entry.id}`);
+    Object.assign(record, withLocalView(record, cachedView));
+    record.remoteUpdatedAt = entry.updated_at;
+    remoteBoards.push(record);
+  }
+  if (remoteSession !== previous) throw new Error("Compte modifié pendant le chargement.");
+  if (owner && (owner.id !== account.id || owner.workspaceId !== account.workspaceId)) resetEmergencyExport();
+  remoteSession = account;
+  suspendedSession = null;
+  lastAuthCheck = Date.now();
   history = [];
   redoHistory = [];
   updateHistoryButtons();
   members = memberResponse.members.map(remoteMemberRecord);
-  const self = members.find((member) => member.id === `user:${remoteSession.id}`);
-  if (self) remoteSession.name = self.name;
-  remoteVersions = new Map();
+  const self = members.find((member) => member.id === `user:${account.id}`);
+  if (self) account.name = self.name;
+  remoteVersions = new Map(boardResponse.boards.map((entry) => [entry.id, entry.version]));
+  remoteBaseVersions = new Map(remoteVersions);
   pendingRemoteBoardIds = new Set();
-  const remoteBoards = [];
-  for (const entry of boardResponse.boards) {
-    const record = await deserializeBoard(entry.data);
-    record.remoteUpdatedAt = entry.updated_at;
-    remoteVersions.set(record.id, entry.version);
-    remoteBoards.push(record);
-  }
+  conflictedRemoteBoardIds = new Set();
+  localRevisions = new Map();
+  scheduledRecords.clear();
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  syncEpoch++;
   const pendingRecords = localRecords.filter((record) =>
     record.id.startsWith(`${REMOTE_CACHE_PREFIX}${remoteSession.id}:`) && record.pendingRemoteSync && record.remoteBoardId,
   );
@@ -263,9 +356,12 @@ async function loadRemoteWorkspace(auth, localRecords) {
     delete data.id;
     delete data.remoteBoardId;
     delete data.pendingRemoteSync;
+    delete data.baseVersion;
     const record = normalizeBoard({ ...data, id: cached.remoteBoardId });
     remoteBoardMap.set(record.id, record);
     pendingRemoteBoardIds.add(record.id);
+    localRevisions.set(record.id, 1);
+    remoteBaseVersions.set(record.id, Number.isInteger(cached.baseVersion) ? cached.baseVersion : null);
   });
   boardRecords = remoteBoardMap;
   remoteBoards.splice(0, remoteBoards.length, ...remoteBoardMap.values());
@@ -295,30 +391,89 @@ async function loadRemoteWorkspace(auth, localRecords) {
   $("#import-local").dataset.available = canImport ? "true" : "false";
   clearInterval(remoteSyncTimer);
   remoteSyncTimer = setInterval(syncRemoteChanges, 15000);
+  setSaveStatus(pendingRemoteBoardIds.size ? "Vérification des copies locales…" : "Enregistré", pendingRemoteBoardIds.size ? "is-saving" : "");
+  if (pendingRemoteBoardIds.size) queueMicrotask(() => syncRemoteChanges());
 }
 
-async function syncRemoteChanges() {
+function workspaceBusy() {
   const active = document.activeElement;
   const editing = active && (canvas.contains(active) || teamPanel.contains(active))
     && (active.isContentEditable || active.matches("input,textarea,select"));
-  if (!remoteSession || backupBusy || remoteSyncInFlight || remoteWritesInFlight || saveTimer || editing
-      || panGesture || drawingGesture || connectionGesture || connectorResizeGesture) return;
+  return backupBusy || remoteWritesInFlight || saveTimer || editing
+    || activeBoardPointers.size || marqueeGesture
+    || panGesture || drawingGesture || connectionGesture || connectorResizeGesture;
+}
+
+async function reconcileRemoteCopies(entries, account, epoch) {
+  const serverBoards = new Map(entries.map((entry) => [entry.id, entry]));
+  for (const id of [...pendingRemoteBoardIds]) {
+    if (remoteSession !== account || syncEpoch !== epoch || workspaceBusy()) return false;
+    const draft = id === board.id ? structuredClone(board) : structuredClone(boardRecords.get(id));
+    if (!draft) continue;
+    const data = await serializeBoard(draft);
+    if (remoteSession !== account || syncEpoch !== epoch || workspaceBusy()) return false;
+    const entry = serverBoards.get(id);
+    const action = pendingBoardAction(entry, remoteBaseVersions.get(id), data);
+    if (action === "conflict") { conflictedRemoteBoardIds.add(id); continue; }
+    if (action === "retry") {
+      try {
+        await writeRecords([remoteCacheRecord(draft, true, account)]);
+        if (remoteSession !== account || syncEpoch !== epoch || workspaceBusy()) return false;
+        await saveRemoteBoard(draft);
+      } catch (error) {
+        if (error.status === 409) conflictedRemoteBoardIds.add(id);
+        throw error;
+      }
+    } else {
+      remoteVersions.set(id, entry.version);
+    }
+    if (remoteSession !== account) return false;
+    remoteBaseVersions.set(id, remoteVersions.get(id));
+    if (remoteSession !== account || syncEpoch !== epoch || workspaceBusy()) return false;
+    await writeRecords([remoteCacheRecord(draft, false, account)]);
+    if (remoteSession !== account || syncEpoch !== epoch || workspaceBusy()) {
+      if (remoteSession === account) {
+        const latest = id === board.id ? board : boardRecords.get(id);
+        if (latest) await writeRecords([remoteCacheRecord(latest, true, account)]);
+      }
+      return false;
+    }
+    pendingRemoteBoardIds.delete(id);
+    conflictedRemoteBoardIds.delete(id);
+    localRevisions.delete(id);
+  }
+  return true;
+}
+
+async function syncRemoteChanges() {
+  if (!remoteSession || remoteSyncInFlight || workspaceBusy()) return;
   remoteSyncInFlight = true;
+  const account = remoteSession;
+  const epoch = syncEpoch;
   try {
+    if (Date.now() - lastAuthCheck > 60000) await refreshRemoteSession(account);
     const [boardResponse, memberResponse] = await Promise.all([
       apiRequest("boards"),
       apiRequest("members"),
     ]);
-    let activeBoardChanged = false;
+    if (remoteSession !== account || syncEpoch !== epoch || workspaceBusy()) return;
+    if (!await reconcileRemoteCopies(boardResponse.boards, account, epoch)) return;
+    const updates = [];
     for (const entry of boardResponse.boards) {
-      if (pendingRemoteBoardIds.has(entry.id) || remoteVersions.get(entry.id) === entry.version) continue;
+      if (localRevisions.has(entry.id) || pendingRemoteBoardIds.has(entry.id) || (remoteVersions.get(entry.id) ?? -1) >= entry.version) continue;
       const record = await deserializeBoard(entry.data);
       record.remoteUpdatedAt = entry.updated_at;
+      updates.push({ entry, record });
+    }
+    if (remoteSession !== account || syncEpoch !== epoch || workspaceBusy()) return;
+    let activeBoardChanged = false;
+    for (const { entry, record } of updates) {
       remoteVersions.set(record.id, entry.version);
+      remoteBaseVersions.set(record.id, entry.version);
       boardRecords.set(record.id, structuredClone(record));
       if (isCatalogue(record)) activeBoardChanged = true;
       if (board.id === record.id) {
-        board = normalizeBoard({ ...record, zoom: board.zoom, viewX: viewport.scrollLeft, viewY: viewport.scrollTop });
+        board = normalizeBoard(withLocalView(record, { ...board, viewX: viewport.scrollLeft, viewY: viewport.scrollTop }));
         activeBoardChanged = true;
       }
     }
@@ -332,6 +487,8 @@ async function syncRemoteChanges() {
     }
     renderTeam();
     renderBoardPicker();
+    if (pendingRemoteBoardIds.size) setSaveStatus(conflictedRemoteBoardIds.size ? "Conflit à résoudre" : "Envoi en attente", "has-error");
+    else if (!localRevisions.size) setSaveStatus("Enregistré");
   } catch (error) {
     console.error("Échec de synchronisation avec l’espace partagé.", error);
     setSaveStatus("Sync. interrompue", "has-error");
@@ -342,9 +499,14 @@ async function syncRemoteChanges() {
 
 function scheduleRemoteMemberSave(member) {
   if (!remoteSession || !member.id.startsWith("user:")) return;
+  const account = remoteSession;
+  syncEpoch++;
   clearTimeout(member.remoteSaveTimer);
   member.remoteSaveTimer = setTimeout(async () => {
+    remoteWritesInFlight++;
+    syncEpoch++;
     try {
+      if (remoteSession !== account) throw new Error("Compte modifié : modification du profil non envoyée.");
       const isOwner = remoteSession.role === "owner";
       const body = { display_name: member.name };
       if (isOwner) {
@@ -365,6 +527,8 @@ function scheduleRemoteMemberSave(member) {
       console.error("Échec de la mise à jour du profil.", error);
       setSaveStatus("Non enregistré", "has-error");
       showToast(error.message);
+    } finally {
+      remoteWritesInFlight--;
     }
   }, 350);
 }
@@ -470,21 +634,30 @@ function scheduleSave(additionalRecords = []) {
   clearTimeout(saveTimer);
   const boardToSave = structuredClone(board);
   const membersToSave = structuredClone(members);
-  const records = new Map([[boardToSave.id, boardToSave]]);
-  additionalRecords.forEach((record) => records.set(record.id, structuredClone(record)));
+  scheduledRecords.set(boardToSave.id, boardToSave);
+  additionalRecords.forEach((record) => scheduledRecords.set(record.id, structuredClone(record)));
+  syncEpoch++;
+  for (const record of scheduledRecords.values()) {
+    boardRecords.set(record.id, structuredClone(record));
+    if (remoteSession) {
+      if (!localRevisions.has(record.id)) remoteBaseVersions.set(record.id, remoteVersions.get(record.id) || 0);
+      localRevisions.set(record.id, (localRevisions.get(record.id) || 0) + 1);
+    }
+  }
   saveTimer = setTimeout(async () => {
     saveTimer = null;
+    const records = new Map(scheduledRecords);
+    scheduledRecords.clear();
     try {
       await persistRecords([...records.values(), { id: WORKSPACE_ID, members: membersToSave }]);
-      records.forEach((record, id) => boardRecords.set(id, record));
       if (remoteSession && remoteVersions.size) $("#import-local").dataset.available = "false";
-      setSaveStatus("Enregistré");
+      if (!scheduledRecords.size && !localRevisions.size) setSaveStatus("Enregistré");
     } catch (error) {
       console.error("Échec de l’enregistrement de l’espace de travail.", error);
       setSaveStatus("Non enregistré", "has-error");
       showToast(remoteSession
         ? error.localBackupSaved
-          ? `Synchronisation refusée : ${error.message}. Une copie locale est conservée.`
+          ? `Envoi interrompu : ${error.message}. Une copie locale est conservée; Actualiser vérifiera le serveur avant de reprendre.`
           : `Impossible d’enregistrer la copie locale : ${error.message}. Les changements sont encore en mémoire.`
         : "Stockage local indisponible ou plein. Exportez vos tableaux avant de fermer cette page.");
     }
@@ -494,7 +667,17 @@ function scheduleSave(additionalRecords = []) {
 function saveImmediately() {
   clearTimeout(saveTimer);
   saveTimer = null;
-  if (remoteSession) return persistRecords(allStoredBoards());
+  if (remoteSession) {
+    const records = new Map(scheduledRecords);
+    scheduledRecords.clear();
+    allStoredBoards().filter((record) => localRevisions.has(record.id)).forEach((record) => records.set(record.id, record));
+    if (records.size) return persistRecords([...records.values()]);
+    return persistenceQueue;
+  }
+  if (suspendedSession) {
+    return writeRecords(allStoredBoards().filter((record) => localRevisions.has(record.id))
+      .map((record) => remoteCacheRecord(record, true, suspendedSession)));
+  }
   return writeRecords([board, { id: WORKSPACE_ID, members }]);
 }
 
@@ -1917,7 +2100,7 @@ function updateViewSave() {
   board.viewX = viewport.scrollLeft;
   board.viewY = viewport.scrollTop;
   ensureInfiniteSpace();
-  scheduleSave();
+  saveAfterQuietScroll();
 }
 
 function ensureInfiniteSpace() {
@@ -1951,13 +2134,23 @@ function ensureInfiniteSpace() {
 }
 
 function saveAfterQuietScroll() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    persistRecords([board, { id: WORKSPACE_ID, members }]).then(() => setSaveStatus("Enregistré")).catch((error) => {
-      console.error("Impossible d’enregistrer la position du tableau.", error);
+  if (!remoteSession) { scheduleSave(); return; }
+  if (scheduledRecords.has(board.id)) scheduledRecords.set(board.id, structuredClone(board));
+  clearTimeout(viewSaveTimer);
+  const account = remoteSession;
+  const record = structuredClone(board);
+  viewSaveTimer = setTimeout(async () => {
+    if (remoteSession !== account) return;
+    try {
+      await writeRecords([remoteCacheRecord(
+        record.id === board.id ? board : boardRecords.get(record.id) || record,
+        localRevisions.has(record.id) || pendingRemoteBoardIds.has(record.id),
+        account,
+      )]);
+    } catch (error) {
+      console.error("Position du tableau non conservée dans ce navigateur.", error);
       reportSaveError(error);
-    });
+    }
   }, 500);
 }
 
@@ -2581,17 +2774,12 @@ async function submitAccountForm(event, action) {
   } catch (error) {
     console.error("Échec de connexion à l’espace partagé.", error);
     if (authenticated) {
+      suspendedSession = remoteSession || suspendedSession;
       remoteSession = null;
       apiReady = false;
       apiState = "error";
-      apiMessage = `Connexion obtenue, mais chargement impossible : ${error.message}. Rechargez la page pour réessayer.`;
-      const localRecords = await readAllRecords();
-      boardRecords = new Map(localWorkspaceRecords(localRecords).map((record) => [record.id, normalizeBoard(record)]));
-      const meta = localRecords.find((record) => record.id === WORKSPACE_ID);
-      members = Array.isArray(meta?.members) ? meta.members : defaultMembers();
-      board = normalizeBoard(boardRecords.get(ROOT_ID) || makeDefaultBoard());
-      boardRecords.set(board.id, structuredClone(board));
-      renderBoard();
+      apiMessage = `Connexion obtenue, mais chargement impossible : ${error.message}. Utilisez Réessayer sans fermer cette page.`;
+      renderAuthControls();
     }
     showToast(error.message);
   }
@@ -2602,13 +2790,18 @@ async function signOutAccount() {
     try {
       await saveImmediately();
     } catch (error) {
-      if (!pendingRemoteBoardIds.size) throw error;
+      if (!error.localBackupSaved) throw error;
       console.error("Déconnexion avec des modifications locales en attente.", error);
     }
     await apiRequest("logout", { method: "POST", body: {} });
     clearInterval(remoteSyncTimer);
     resetEmergencyExport();
     remoteSession = null;
+    suspendedSession = null;
+    localRevisions.clear();
+    scheduledRecords.clear();
+    remoteBaseVersions.clear();
+    conflictedRemoteBoardIds.clear();
     remoteVersions = new Map();
     history = [];
     redoHistory = [];
@@ -2692,23 +2885,50 @@ async function importLocalBoards() {
 }
 
 async function resolvePendingCopies(mode) {
-  if (!remoteSession || !pendingRemoteBoardIds.size) return;
+  if (!remoteSession || !conflictedRemoteBoardIds.size) return;
+  if (remoteWritesInFlight || remoteSyncInFlight || saveTimer) {
+    showToast("Une sauvegarde est en cours. Attendez avant de choisir une version.");
+    return;
+  }
+  const account = remoteSession;
+  const epoch = syncEpoch;
+  remoteWritesInFlight++;
   try {
     const response = await apiRequest("boards");
     const serverBoards = new Map(response.boards.map((entry) => [entry.id, entry]));
-    for (const id of [...pendingRemoteBoardIds]) {
+    for (const id of [...conflictedRemoteBoardIds]) {
+      if (remoteSession !== account || syncEpoch !== epoch) throw new Error("La copie a changé pendant la résolution. Exportez-la puis réessayez.");
       const serverEntry = serverBoards.get(id);
       if (mode === "publish") {
-        const draft = id === board.id ? board : boardRecords.get(id);
+        const draft = structuredClone(id === board.id ? board : boardRecords.get(id));
         if (!draft) continue;
         remoteVersions.set(id, serverEntry?.version || 0);
         await saveRemoteBoard(draft);
+        remoteBaseVersions.set(id, remoteVersions.get(id));
+        if (remoteSession !== account || syncEpoch !== epoch) {
+          if (remoteSession === account) {
+            const latest = id === board.id ? board : boardRecords.get(id);
+            if (latest) await writeRecords([remoteCacheRecord(latest, true, account)]);
+          }
+          throw new Error("Votre copie a changé pendant l’envoi. La nouvelle copie reste en attente.");
+        }
         await writeRecords([remoteCacheRecord(draft, false)]);
+        if (remoteSession !== account || syncEpoch !== epoch) {
+          if (remoteSession === account) {
+            const latest = id === board.id ? board : boardRecords.get(id);
+            if (latest) await writeRecords([remoteCacheRecord(latest, true, account)]);
+          }
+          throw new Error("Votre copie a changé pendant la confirmation locale.");
+        }
         pendingRemoteBoardIds.delete(id);
+        conflictedRemoteBoardIds.delete(id);
+        localRevisions.delete(id);
+        remoteBaseVersions.set(id, remoteVersions.get(id));
         continue;
       }
       if (serverEntry) {
         const serverBoard = await deserializeBoard(serverEntry.data);
+        if (remoteSession !== account || syncEpoch !== epoch) throw new Error("La copie a changé pendant le chargement.");
         remoteVersions.set(id, serverEntry.version);
         boardRecords.set(id, serverBoard);
         await writeRecords([remoteCacheRecord(serverBoard, false)]);
@@ -2717,7 +2937,17 @@ async function resolvePendingCopies(mode) {
         boardRecords.delete(id);
         await deleteRecord(`${REMOTE_CACHE_PREFIX}${remoteSession.id}:${id}`);
       }
+      if (remoteSession !== account || syncEpoch !== epoch) {
+        if (remoteSession === account) {
+          const latest = id === board.id ? board : boardRecords.get(id);
+          if (latest) await writeRecords([remoteCacheRecord(latest, true, account)]);
+        }
+        throw new Error("Votre copie a changé pendant la résolution locale.");
+      }
       pendingRemoteBoardIds.delete(id);
+      conflictedRemoteBoardIds.delete(id);
+      localRevisions.delete(id);
+      remoteBaseVersions.set(id, remoteVersions.get(id) || 0);
     }
     if (mode === "reload" && pendingRemoteBoardIds.size === 0 && !boardRecords.has(board.id)) {
       board = normalizeBoard(boardRecords.get(ROOT_ID) || boardRecords.values().next().value || {
@@ -2735,6 +2965,8 @@ async function resolvePendingCopies(mode) {
     console.error("Échec de résolution du conflit de synchronisation.", error);
     renderAuthControls();
     showToast(`Conflit non résolu : ${error.message}. La copie locale reste conservée.`);
+  } finally {
+    remoteWritesInFlight--;
   }
 }
 
@@ -2956,6 +3188,7 @@ function renderAccessGate() {
   $("#login-page").hidden = !locked;
   $("#login-loading").hidden = true;
   $("#auth-retry").hidden = apiState !== "error" && apiState !== "missing";
+  $("#session-export").hidden = !suspendedSession;
   const destination = locked ? $("#login-content") : $("#account-slot");
   const section = $("#auth-section");
   if (section.parentElement !== destination) destination.append(section);
@@ -2990,12 +3223,13 @@ function renderAuthControls() {
   $("#owner-setup").hidden = !showSetup;
   $("#owner-setup-form").querySelectorAll("input,button").forEach((input) => { input.disabled = setupBusy || !showSetup; });
   $("#auth-description").textContent = apiState === "error"
-    ? `Serveur équipe indisponible : ${apiMessage} Vérifiez pixelboard-config.php à côté de public_html et la base MySQL, puis rechargez cette page. Vos données restent locales.`
+    ? `Connexion impossible : ${apiMessage} Utilisez Réessayer. Si le problème persiste, vérifiez l’API PHP et la base MySQL. Aucune donnée locale n’a été effacée.`
     : apiState === "missing"
       ? "API PHP absente : publiez aussi le dossier dist/api dans public_html/api sur Hostinger, puis rechargez cette page. Les comptes et le partage ne sont pas actifs; vos données restent locales."
       : apiState === "checking"
         ? "Vérification du serveur de comptes…"
-        : showSetup ? "Le serveur est prêt. Créez votre premier compte administrateur ci-dessous."
+        : suspendedSession ? apiMessage
+          : showSetup ? "Le serveur est prêt. Créez votre premier compte administrateur ci-dessous."
           : "Connectez-vous avec votre compte ou créez-en un avec le code transmis par le propriétaire.";
   $("#login-form").hidden = showSetup || registerMode;
   $("#register-form").hidden = showSetup || !registerMode;
@@ -3008,13 +3242,15 @@ function renderAuthControls() {
   const syncWarning = $("#sync-warning");
   syncWarning.hidden = !remoteSession || !pendingRemoteBoardIds.size;
   syncWarning.textContent = pendingRemoteBoardIds.size
-    ? `Conflit de synchronisation : ouvrez Mon compte puis choisissez « Recharger la copie serveur » pour récupérer la version partagée. Exportez d’abord votre copie si vous souhaitez conserver vos modifications locales.`
+    ? conflictedRemoteBoardIds.size
+      ? "Versions différentes : votre copie locale est conservée. Exportez-la avant de choisir explicitement une version dans Mon compte."
+      : "Envoi interrompu : votre copie locale est conservée. La synchronisation vérifiera le serveur avant de reprendre; Actualiser permet de réessayer."
     : "";
   $("#invite-create").hidden = remoteSession?.role !== "owner";
   $("#backup-controls").hidden = remoteSession?.role !== "owner";
   $("#import-local").hidden = $("#import-local").dataset.available !== "true" || Boolean(!remoteSession);
-  $("#publish-local-copy").hidden = !remoteSession || !pendingRemoteBoardIds.size;
-  $("#reload-shared-copy").hidden = !remoteSession || !pendingRemoteBoardIds.size;
+  $("#publish-local-copy").hidden = !remoteSession || !conflictedRemoteBoardIds.size;
+  $("#reload-shared-copy").hidden = !remoteSession || !conflictedRemoteBoardIds.size;
   $("#invite-display").hidden = !inviteCodeValue;
   $("#invite-code").value = inviteCodeValue;
   $("#login-form").querySelectorAll("input,button").forEach((input) => { input.disabled = apiState !== "ready"; });
@@ -3255,7 +3491,7 @@ function reportSaveError(error) {
   setSaveStatus("Non enregistré", "has-error");
   showToast(remoteSession
     ? error.localBackupSaved
-      ? `Synchronisation refusée : ${error.message}. Une copie locale est conservée.`
+      ? `Envoi interrompu : ${error.message}. Une copie locale est conservée; Actualiser vérifiera le serveur avant de reprendre.`
       : `Sauvegarde impossible : ${error.message}. Exportez la copie encore ouverte avant de quitter.`
     : "Impossible d’enregistrer. Vérifiez le stockage local.");
 }
@@ -3332,6 +3568,7 @@ function initEvents() {
   $("#help-link").addEventListener("click", (event) => { event.preventDefault(); showCurrentStorageNotice(); });
   $("#share-button").addEventListener("click", showCurrentStorageNotice);
   $("#export-button").addEventListener("click", exportWorkspace);
+  $("#session-export").addEventListener("click", exportWorkspace);
   $("#export-close").addEventListener("click", () => { $("#emergency-export").close(); $("#emergency-export").hidden = true; });
   $("#export-copy").addEventListener("click", copyEmergencyExport);
   $("#undo-button").addEventListener("click", handleUndo);
@@ -3345,7 +3582,7 @@ function initEvents() {
       showToast("Connectez-vous pour synchroniser les tableaux de votre équipe.");
       return;
     }
-    syncRemoteChanges();
+    resumeRemoteSync();
   });
   $("#delete-vector-button").addEventListener("click", deleteSelectedVector);
   $("#duplicate-selection").addEventListener("click", duplicateSelection);
@@ -3373,7 +3610,7 @@ function initEvents() {
   $("#task-form").addEventListener("submit", addTaskFromForm);
   $("#login-form").addEventListener("submit", (event) => submitAccountForm(event, "login"));
   $("#register-form").addEventListener("submit", (event) => submitAccountForm(event, "register"));
-  $("#auth-retry").addEventListener("click", () => location.reload());
+  $("#auth-retry").addEventListener("click", retrySession);
   $("#owner-setup-form").addEventListener("submit", submitOwnerSetup);
   $("#profile-photo").addEventListener("change", uploadProfilePhoto);
   $("#remove-profile-photo").addEventListener("click", () => saveProfilePhoto("").catch((error) => showToast(`Photo non enregistrée : ${error.message}`)));
@@ -3684,12 +3921,64 @@ function initEvents() {
   window.addEventListener("blur", () => {
     spacePressed = false;
     viewport.classList.remove("is-space-ready");
+    if (activeBoardPointers.size) {
+      activeBoardPointers.clear();
+      if (remoteSession) scheduleSave();
+    }
   });
+  canvas.addEventListener("pointerdown", (event) => {
+    activeBoardPointers.add(event.pointerId);
+    syncEpoch++;
+  }, { capture: true });
+  for (const type of ["pointerup", "pointercancel"]) {
+    window.addEventListener(type, (event) => activeBoardPointers.delete(event.pointerId), { capture: true });
+  }
   window.addEventListener("resize", () => {
     closeCardMenu();
     updateZoom();
     updateRailToggle();
   });
+  window.addEventListener("online", resumeRemoteSync);
+  window.addEventListener("focus", resumeRemoteSync);
+  window.addEventListener("pageshow", resumeRemoteSync);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") resumeRemoteSync();
+    else if (remoteSession && scheduledRecords.size) {
+      const owner = remoteSession;
+      writeRecords([...scheduledRecords.values()].map((record) => remoteCacheRecord(record, true, owner)))
+        .catch((error) => { console.error("Copie locale avant mise en veille impossible.", error); setSaveStatus("Copie mémoire à exporter", "has-error"); });
+    }
+  });
+}
+
+function resumeRemoteSync() {
+  lastAuthCheck = 0;
+  void syncRemoteChanges();
+}
+
+async function retrySession() {
+  const button = $("#auth-retry");
+  button.disabled = true;
+  try {
+    const records = await readAllRecords();
+    const auth = await apiRequest("auth");
+    setupAvailable = auth.setup_available === true;
+    apiReady = true;
+    apiState = "ready";
+    apiMessage = "";
+    if (auth.user) await loadRemoteWorkspace(auth, records);
+    renderBoard();
+  } catch (error) {
+    console.error("Nouvelle tentative de connexion impossible.", error);
+    remoteSession = null;
+    clearInterval(remoteSyncTimer);
+    apiReady = false;
+    apiState = error.apiMissing ? "missing" : "error";
+    apiMessage = error.message;
+  } finally {
+    button.disabled = false;
+    renderAuthControls();
+  }
 }
 
 async function start() {
@@ -3736,7 +4025,7 @@ async function start() {
     console.error("Impossible d’ouvrir l’espace de travail.", error);
     apiReady = false;
     apiState = "error";
-    apiMessage = "Le stockage local de ce navigateur est indisponible.";
+    apiMessage = `Le stockage local de ce navigateur est indisponible : ${error.message}`;
     board = makeDefaultBoard();
     members = defaultMembers();
     boardRecords.set(board.id, board);

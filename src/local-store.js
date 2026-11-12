@@ -1,4 +1,4 @@
-export function createLocalStore(indexedDB, name, storeName) {
+export function createLocalStore(indexedDB, name, storeName, timeoutMs = 5000) {
   let connection = null;
   let opening = null;
   let queue = Promise.resolve();
@@ -9,6 +9,7 @@ export function createLocalStore(indexedDB, name, storeName) {
   }
 
   function open() {
+    if (!indexedDB) return Promise.reject(new Error("IndexedDB est indisponible dans ce navigateur."));
     if (connection) return Promise.resolve(connection);
     if (opening) return opening;
     opening = new Promise((resolve, reject) => {
@@ -17,7 +18,7 @@ export function createLocalStore(indexedDB, name, storeName) {
       const timer = setTimeout(() => {
         settled = true;
         reject(new Error("Stockage local bloqué. Gardez cette page ouverte et exportez la copie mémoire avant de fermer un autre onglet PixelBoard."));
-      }, 5000);
+      }, timeoutMs);
       request.onupgradeneeded = () => {
         if (!request.result.objectStoreNames.contains(storeName)) request.result.createObjectStore(storeName, { keyPath: "id" });
       };
@@ -48,12 +49,17 @@ export function createLocalStore(indexedDB, name, storeName) {
         return await new Promise((resolve, reject) => {
           const transaction = db.transaction(storeName, mode);
           transactionStarted = true;
+          const timer = setTimeout(() => {
+            reject(new DOMException("Le stockage local ne répond pas. Gardez cette page ouverte et exportez votre copie mémoire.", "TimeoutError"));
+            transaction.abort();
+            invalidate(db);
+          }, timeoutMs);
           let result;
-          transaction.oncomplete = () => resolve(result?.result);
-          transaction.onabort = () => reject(transaction.error || new DOMException("Enregistrement interrompu.", "AbortError"));
+          transaction.oncomplete = () => { clearTimeout(timer); resolve(result?.result); };
+          transaction.onabort = () => { clearTimeout(timer); reject(transaction.error || new DOMException("Enregistrement interrompu.", "AbortError")); };
           transaction.onerror = () => { /* onabort reports the final transaction outcome. */ };
           try { result = execute(transaction.objectStore(storeName)); }
-          catch (error) { transaction.abort(); reject(error); }
+          catch (error) { clearTimeout(timer); transaction.abort(); reject(error); }
         });
       } catch (error) {
         const stale = error.name === "InvalidStateError" && !transactionStarted;

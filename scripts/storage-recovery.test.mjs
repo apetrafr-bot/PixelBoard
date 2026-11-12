@@ -168,8 +168,10 @@ test("local-cache failure blocks remote mutation and version advance; recovered 
   const body = source.slice(start, source.indexOf("\nfunction remoteCacheRecord(", start));
   let broken = true, uploads = 0;
   const context = vm.createContext({
-    remoteSession: { id: "1" }, persistenceQueue: Promise.resolve(), structuredClone,
+    remoteSession: { id: "1" }, suspendedSession: null, persistenceQueue: Promise.resolve(), structuredClone,
     remoteWritesInFlight: 0, WORKSPACE_ID: "workspace",
+    syncEpoch: 0, localRevisions: new Map(), remoteBaseVersions: new Map(), remoteVersions: new Map(),
+    boardRecords: new Map(), conflictedRemoteBoardIds: new Set(), board: { id: "board" },
     pendingRemoteBoardIds: new Set(), remoteCacheRecord: (record) => record,
     writeRecords: async () => { if (broken) throw Error("closing"); },
     saveRemoteBoard: async () => { uploads++; }, renderAuthControls() {},
@@ -193,6 +195,6 @@ test("local-cache failure blocks remote mutation and version advance; recovered 
   await assert.rejects(queued, /Compte modifié/);
   const previousUploads = uploads;
   context.writeRecords = async () => { context.remoteSession = { id: "3" }; };
-  await assert.rejects(context.persistRecords([{ id: "board" }]), /aucun envoi serveur/);
+  await assert.rejects(context.persistRecords([{ id: "board" }]), /Compte modifié/);
   assert.equal(uploads, previousUploads);
 });

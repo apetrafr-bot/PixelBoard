@@ -4,8 +4,8 @@ import vm from "node:vm";
 import test from "node:test";
 
 const source = await readFile(new URL("../src/main.js", import.meta.url), "utf8");
-const start = source.indexOf("async function syncRemoteChanges()");
-const end = source.indexOf("\nfunction ", start);
+const start = source.indexOf("function workspaceBusy()");
+const end = source.indexOf("\nfunction scheduleRemoteMemberSave", start);
 const sync = source.slice(start, end);
 
 test("connector tips stop at card borders instead of inside content", () => {
@@ -62,7 +62,10 @@ for (const editing of [false, true]) {
       teamPanel: { contains: () => false }, remoteSession: { id: 1 },
       backupBusy: false, remoteSyncInFlight: false, remoteWritesInFlight: 0, saveTimer: null,
       panGesture: null, drawingGesture: null, connectionGesture: null, connectorResizeGesture: null,
+      activeBoardPointers: new Set(), marqueeGesture: null,
       pendingRemoteBoardIds: new Set(), remoteVersions: new Map(), boardRecords: new Map(),
+      conflictedRemoteBoardIds: new Set(), localRevisions: new Map(), remoteBaseVersions: new Map(),
+      lastAuthCheck: Date.now(), syncEpoch: 0,
       board: { id: "root" }, members: [], structuredClone, console,
       isCatalogue: (record) => record?.recordType === "item-catalogue",
       async apiRequest(action) {

@@ -96,6 +96,18 @@ Si le navigateur signale « database connection is closing », **gardez l’ongl
 
 **Exporter** prépare immédiatement une photographie de l’état mémoire actuel (tableaux chargés, tableau actif prioritaire, profils et médias image/couverture/audio inclus), sans attendre IndexedDB ni une requête serveur et sans modifier la copie serveur. Le panneau **Copie de secours** conserve un lien **Télécharger le JSON** et le texte **Copier le JSON**; si le navigateur refuse le presse-papiers, sélectionnez le texte et utilisez Copier/Ctrl+C vers un fichier `.json`. Vérifiez le fichier avant de fermer l’onglet. La préparation ou le clic de téléchargement ne prouve pas qu’un fichier a été enregistré. Une page déjà ouverte avec une ancienne version ne reçoit pas ce correctif automatiquement : ne la rechargez pas pour l’obtenir tant que sa mémoire n’a pas été sauvegardée séparément.
 
+Le démarrage ne doit pas rester sur **Vérification de votre session…** : ouverture et transactions IndexedDB ont un délai de 5 secondes; chaque requête API, y compris la lecture du JSON, est limitée à 15 secondes. Un dépassement affiche une erreur et conserve le verrou de connexion, sans effacer les données ni prétendre être connecté. **Réessayer la connexion au serveur** retente le stockage et la session sur place, sans rechargement. Un échec pendant un envoi serveur ne prouve pas que le serveur n’a rien reçu : conservez votre copie mémoire et les protections de version/conflit. Pour une ancienne page encore ouverte avec des modifications, exportez/copiez-les avant toute fermeture ou actualisation; elle ne reçoit pas automatiquement ce correctif.
+
+### Reprise après inactivité ou coupure réseau
+
+La synchronisation périodique reprend aussi au retour de l’onglet, à `pageshow`, au focus et au retour réseau. La session est revérifiée à la reprise et avant un envoi après une minute sans vérification. Un refus CSRF explicitement identifié par l’API entraîne une seule vérification de session et une seule nouvelle tentative, uniquement pour le même compte/espace; un refus de permission n’est jamais contourné. Une expiration réelle verrouille l’accès sans jeter les changements : **Exporter ma copie avant de me reconnecter** reste accessible. La reconnexion au même compte conserve les brouillons de ce compte avant de charger le serveur.
+
+Tous les tableaux d’un lot sont copiés localement avant son premier envoi. Les réponses serveur tardives sont ignorées si une édition, une sauvegarde, une interaction d’édition ou un changement de compte a eu lieu entre-temps. Déplacer la vue ou zoomer ne publie plus tout le tableau : ces préférences restent locales à cet appareil, ce qui évite d’augmenter une version partagée pour une simple navigation. Une sauvegarde de vue ne remplace jamais le lot d’édition différé.
+
+Une interruption n’est pas assimilée à un conflit définitif. La copie locale inclut la version serveur de départ; à la reprise, PixelBoard accepte l’accusé si le contenu serveur est déjà identique (réponse précédente perdue), ou réessaie avec contrôle de version si le serveur est encore à la version de départ. Si les contenus divergent avec une version différente, les deux copies restent intactes et une décision explicite est requise dans **Mon compte**, après export. Une ancienne copie en attente sans version de départ connue reste volontairement à résoudre manuellement, sauf si son contenu est déjà identique au serveur.
+
+Publiez ensemble le build statique et son dossier `dist/api` pour bénéficier du signal CSRF de l’API; aucune migration SQL ni réinitialisation n’est nécessaire. Les tests locaux ne prouvent pas la disponibilité Hostinger/MySQL, la durée de conservation des sessions de l’hébergeur, ni la récupération d’un onglet ancien déjà ouvert. Une fermeture brutale avant la copie locale, un disque plein, un cache effacé ou une panne serveur restent possibles : conservez un export vérifié avant toute opération de remplacement ou fermeture d’une page non synchronisée.
+
 ### Accès au site
 
 Le site affiche d'abord une page de connexion, sans canvas ni outils accessibles hors session. Après authentification, l'espace partagé s'ouvre; une déconnexion ou une réponse API 401 réaffiche la connexion. Si l'API est absente ou indisponible, le diagnostic et un bouton de nouvelle tentative restent affichés, sans bascule vers un éditeur local. Les anciennes données IndexedDB sont conservées et leur import reste explicite après connexion. L'inscription membre exige toujours une invitation; le formulaire propriétaire reste limité au setup initial protégé. Le masquage de l'éditeur ne remplace pas les autorisations de l'API.
@@ -169,6 +181,7 @@ npm test
 php -l api/index.php
 php -l api/lib.php
 php api/tests.php
+php api/session-tests.php
 php -l api/unity.php
 php -l api/unity-lib.php
 php api/unity-tests.php

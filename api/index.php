@@ -85,7 +85,10 @@ function pixelboard_require_csrf(): void
 {
     $provided = (string) ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
     if (!pixelboard_csrf_matches((string) ($_SESSION['csrf_token'] ?? ''), $provided)) {
-        pixelboard_fail(403, 'La vérification de sécurité a échoué. Rechargez la page.');
+        pixelboard_reply(403, [
+            'error' => 'La vérification de sécurité a échoué. Vérifiez votre session sans fermer cette page.',
+            'code' => 'csrf_expired',
+        ]);
     }
 }
 

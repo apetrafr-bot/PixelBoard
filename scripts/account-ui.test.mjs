@@ -93,6 +93,7 @@ for (const state of ["checking", "missing", "error", "ready"]) {
       renderAccessGate() {},
       remoteSession: null, registerMode: false, pendingRemoteBoardIds: new Set(), inviteCodeValue: "",
       setupAvailable: false, setupBusy: false,
+      suspendedSession: null, conflictedRemoteBoardIds: new Set(),
     });
     assert.equal($("#auth-section").hidden, false);
     assert.equal($("#auth-forms").hidden, false);
@@ -131,6 +132,7 @@ for (const [state, available, session, visible] of [
       $, apiState: state, apiMessage: "", remoteSession: session, registerMode: false,
       renderAccessGate() {},
       pendingRemoteBoardIds: new Set(), inviteCodeValue: "", setupAvailable: available, setupBusy: false,
+      suspendedSession: null, conflictedRemoteBoardIds: new Set(),
     });
     assert.equal($("#owner-setup").hidden, !visible);
     assert.equal($("#backup-controls").hidden, session?.role !== "owner");
@@ -155,6 +157,7 @@ for (const [state, available, session, visible] of [
         const gate = source.slice(source.indexOf("function renderAccessGate()"), source.indexOf("\nfunction renderAuthControls()"));
         vm.runInNewContext(`${gate}\nrenderAccessGate();`, {
           $, remoteSession: signedIn ? { id: "1" } : null, apiState: "ready",
+          suspendedSession: null, localRevisions: new Map(),
           document: { body: { classList: { toggle(name, value) { locked = value; } } } },
         });
         assert.equal(locked, !signedIn);
