@@ -7,6 +7,49 @@ const source = await readFile(new URL("../src/main.js", import.meta.url), "utf8"
 const render = source.slice(source.indexOf("function renderAuthControls()"), source.indexOf("\nfunction renderMembers()"));
 const renderTeam = source.slice(source.indexOf("function renderTeam()"), source.indexOf("\nfunction renderAuthControls()"));
 const submitSetup = source.slice(source.indexOf("async function submitOwnerSetup("), source.indexOf("\nfunction renderAuthControls()"));
+const submitAccount = source.slice(source.indexOf("async function submitAccountForm("), source.indexOf("\nasync function signOutAccount("));
+
+for (const outcome of ["success", "workspace-error"]) {
+  test(`login transition ${outcome} updates the auth gate without refreshing`, async () => {
+    const form = { elements: {}, reset() {} };
+    const nodes = new Map([
+      ["#login-form", form], ["#register-form", { elements: {} }],
+    ]);
+    const calls = [];
+    const context = vm.createContext({
+      $: (selector) => nodes.get(selector) || {},
+      FormData: class { entries() { return [["email", "member@example.test"], ["password", "private-password"]]; } },
+      apiRequest: async () => ({ user: { id: 7 } }),
+      async readAllRecords() { calls.push("read"); return []; },
+      async loadRemoteWorkspace() {
+        calls.push("workspace");
+        if (outcome === "workspace-error") throw Error("boards unavailable");
+        context.remoteSession = { id: "7" };
+      },
+      renderAuthControls() { calls.push("auth-ui"); },
+      renderBoard() { calls.push("board-ui"); },
+      restoreBoardViewport() { calls.push("viewport"); },
+      renderTeam() { calls.push("team-ui"); },
+      showToast() {}, console: { error() {} },
+      viewport: { scrollLeft: 0, scrollTop: 0 },
+      board: { viewX: 12, viewY: 34 },
+      apiReady: false, apiState: "checking", inviteCodeValue: "",
+      remoteSession: null, suspendedSession: null,
+      clearInterval() {},
+    });
+    vm.runInContext(submitAccount, context);
+    await context.submitAccountForm({ preventDefault() {}, currentTarget: form }, "login");
+    if (outcome === "success") {
+      assert.equal(context.remoteSession.id, "7");
+      assert.deepEqual(calls, ["read", "workspace", "auth-ui", "board-ui", "viewport", "team-ui"]);
+      assert.equal(context.apiState, "ready");
+    } else {
+      assert.equal(context.apiState, "error");
+      assert.match(context.apiMessage, /boards unavailable/);
+      assert.deepEqual(calls, ["read", "workspace", "auth-ui"]);
+    }
+  });
+}
 
 for (const outcome of ["success", "wrong-secret", "already-initialized", "http"]) {
   test(`owner setup submission handles ${outcome} without retaining secrets`, async () => {

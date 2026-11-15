@@ -2096,6 +2096,29 @@ function updateZoom() {
   if (selectedVectorId) renderVectorItems();
 }
 
+function restoreBoardViewport() {
+  viewport.scrollLeft = board.viewX;
+  viewport.scrollTop = board.viewY;
+  if (!viewport.clientWidth || !viewport.clientHeight) return;
+  const cards = [...canvas.querySelectorAll(".board-card")];
+  if (!cards.length) return;
+  const visible = () => {
+    const view = viewport.getBoundingClientRect();
+    return cards.some((card) => {
+      const rect = card.getBoundingClientRect();
+      return rect.right > view.left && rect.left < view.right
+        && rect.bottom > view.top && rect.top < view.bottom;
+    });
+  };
+  if (visible()) return;
+  fitBoardContent();
+  if (!visible()) {
+    const first = cards[0];
+    focusWorldPoint(first.offsetLeft + first.offsetWidth / 2, first.offsetTop + first.offsetHeight / 2);
+    updateViewSave();
+  }
+}
+
 function updateViewSave() {
   board.viewX = viewport.scrollLeft;
   board.viewY = viewport.scrollTop;
@@ -2766,9 +2789,9 @@ async function submitAccountForm(event, action) {
     apiState = "ready";
     inviteCodeValue = "";
     await loadRemoteWorkspace(result, await readAllRecords());
+    renderAuthControls();
     renderBoard();
-    viewport.scrollLeft = board.viewX;
-    viewport.scrollTop = board.viewY;
+    restoreBoardViewport();
     renderTeam();
     showToast(action === "register" ? "Compte créé, vous êtes connecté à l’espace partagé." : "Connexion à l’espace partagé réussie.");
   } catch (error) {
@@ -3968,6 +3991,7 @@ async function retrySession() {
     apiMessage = "";
     if (auth.user) await loadRemoteWorkspace(auth, records);
     renderBoard();
+    if (remoteSession) restoreBoardViewport();
   } catch (error) {
     console.error("Nouvelle tentative de connexion impossible.", error);
     remoteSession = null;
@@ -4018,8 +4042,11 @@ async function start() {
     renderBoard();
     updateHistoryButtons();
     requestAnimationFrame(() => {
-      viewport.scrollLeft = board.viewX;
-      viewport.scrollTop = board.viewY;
+      if (remoteSession) restoreBoardViewport();
+      else {
+        viewport.scrollLeft = board.viewX;
+        viewport.scrollTop = board.viewY;
+      }
     });
   } catch (error) {
     console.error("Impossible d’ouvrir l’espace de travail.", error);

@@ -52,6 +52,37 @@ test("recenter uses card bounds in both dimensions", () => {
   assert.equal(context.board.zoom, .52);
 });
 
+for (const scenario of ["visible", "offscreen", "wide-gap", "empty", "hidden"]) {
+  test(`session viewport restoration handles ${scenario} without changing card data`, () => {
+    const calls = [];
+    let visible = scenario === "visible";
+    const card = {
+      offsetLeft: 100, offsetTop: 200, offsetWidth: 200, offsetHeight: 100,
+      getBoundingClientRect: () => visible
+        ? { left: 100, right: 300, top: 200, bottom: 300 }
+        : { left: 1500, right: 1700, top: 1200, bottom: 1300 },
+    };
+    const viewport = {
+      clientWidth: scenario === "hidden" ? 0 : 800, clientHeight: 600,
+      getBoundingClientRect: () => ({ left: 0, right: 800, top: 0, bottom: 600 }),
+    };
+    const code = source.slice(source.indexOf("function restoreBoardViewport()"), source.indexOf("\nfunction updateViewSave()"));
+    vm.runInNewContext(`${code}\nrestoreBoardViewport();`, {
+      viewport, board: { viewX: 123, viewY: 456 },
+      canvas: { querySelectorAll: () => scenario === "empty" ? [] : [card] },
+      fitBoardContent() { calls.push("fit"); if (scenario !== "wide-gap") visible = true; },
+      focusWorldPoint(x, y) { calls.push([x, y]); },
+      updateViewSave() { calls.push("cache-view"); },
+    });
+    assert.equal(viewport.scrollLeft, 123);
+    assert.equal(viewport.scrollTop, 456);
+    assert.deepEqual(calls, scenario === "offscreen" ? ["fit"]
+      : scenario === "wide-gap" ? ["fit", [200, 250], "cache-view"] : []);
+    assert.equal(card.offsetLeft, 100);
+    assert.equal(card.offsetTop, 200);
+  });
+}
+
 for (const editing of [false, true]) {
   test(`remote boards synchronize with focused canvas when editing=${editing}`, async () => {
     let requests = 0;

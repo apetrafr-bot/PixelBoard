@@ -110,6 +110,8 @@ Publiez ensemble le build statique et son dossier `dist/api` pour bénéficier d
 
 ### Accès au site
 
+Après connexion ou ouverture d’une session existante, la vue enregistrée est restaurée. Si toutes les cartes sont hors écran, le tableau est recentré automatiquement sans déplacer les objets ni publier de modification serveur. Le bouton **Recentrer** permet aussi de retrouver les cartes à tout moment.
+
 Le site affiche d'abord une page de connexion, sans canvas ni outils accessibles hors session. Après authentification, l'espace partagé s'ouvre; une déconnexion ou une réponse API 401 réaffiche la connexion. Si l'API est absente ou indisponible, le diagnostic et un bouton de nouvelle tentative restent affichés, sans bascule vers un éditeur local. Les anciennes données IndexedDB sont conservées et leur import reste explicite après connexion. L'inscription membre exige toujours une invitation; le formulaire propriétaire reste limité au setup initial protégé. Le masquage de l'éditeur ne remplace pas les autorisations de l'API.
 
 ### Mise à jour photos et édition des cartes
